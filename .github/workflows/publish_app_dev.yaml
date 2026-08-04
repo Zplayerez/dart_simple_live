@@ -3,6 +3,8 @@ name: app-build-action-dev
 on:
   workflow_dispatch:
   push:
+    branches:
+      - "codex/build-20260805"
     tags:
       - "dev_v*"
 
@@ -17,22 +19,6 @@ jobs:
     steps:
       # 签出代码
       - uses: actions/checkout@v4
-        with:
-          ref: dev
-
-      # APK签名设置
-      - name: Download Android keystore
-        id: android_keystore
-        uses: timheuer/base64-to-file@v1.2
-        with:
-          fileName: keystore.jks
-          encodedString: ${{ secrets.KEYSTORE_BASE64 }}
-      - name: Create key.properties
-        run: |
-          echo "storeFile=${{ steps.android_keystore.outputs.filePath }}" > simple_live_app/android/key.properties
-          echo "storePassword=${{ secrets.STORE_PASSWORD }}" >> simple_live_app/android/key.properties
-          echo "keyPassword=${{ secrets.KEY_PASSWORD }}" >> simple_live_app/android/key.properties
-          echo "keyAlias=${{ secrets.KEY_ALIAS }}" >> simple_live_app/android/key.properties
 
       # 设置JAVA环境
       - uses: actions/setup-java@v4
@@ -40,6 +26,26 @@ jobs:
           distribution: "zulu"
           java-version: "17"
           cache: "gradle"
+
+      # Fork 不继承上游 Secrets，生成仅供本次开发构建使用的临时签名。
+      - name: Create temporary Android signing key
+        shell: bash
+        run: |
+          keytool -genkeypair -noprompt \
+            -keystore "$RUNNER_TEMP/simple-live-build.jks" \
+            -storepass android \
+            -alias build \
+            -keypass android \
+            -dname "CN=GitHub Actions Development Build" \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000
+          {
+            echo "storeFile=$RUNNER_TEMP/simple-live-build.jks"
+            echo "storePassword=android"
+            echo "keyPassword=android"
+            echo "keyAlias=build"
+          } > simple_live_app/android/key.properties
 
       # 设置Flutter
       - name: Flutter action
@@ -131,8 +137,6 @@ jobs:
     steps:
       # 签出代码
       - uses: actions/checkout@v4
-        with:
-          ref: dev
       # 设置Flutter环境
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -180,8 +184,6 @@ jobs:
     steps:
       # 签出代码
       - uses: actions/checkout@v4
-        with:
-          ref: dev
       # 设置Flutter环境
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
