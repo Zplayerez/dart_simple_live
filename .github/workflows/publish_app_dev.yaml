@@ -2,15 +2,23 @@ name: app-build-action-dev
 
 on:
   workflow_dispatch:
+    inputs:
+      target:
+        description: "Build target"
+        required: true
+        default: "all"
+        type: choice
+        options:
+          - "all"
+          - "windows"
   push:
-    branches:
-      - "codex/build-20260805"
     tags:
       - "dev_v*"
 
 jobs:
   # 打包Android、iOS、Mac
   build-mac-ios-android:
+    if: ${{ inputs.target != 'windows' }}
     runs-on: macos-latest
 
     permissions:
@@ -131,6 +139,7 @@ jobs:
 
   # 打包Linux
   build-linux:
+    if: ${{ inputs.target != 'windows' }}
     runs-on: ubuntu-22.04
     permissions:
       contents: write
@@ -178,7 +187,7 @@ jobs:
 
   # 打包Windows
   build-windows:
-    runs-on: windows-latest
+    runs-on: windows-2022
     permissions:
       contents: write
     steps:
