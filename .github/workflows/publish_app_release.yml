@@ -18,11 +18,13 @@ jobs:
       #APK签名设置
       - name: Download Android keystore
         id: android_keystore
+        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
         uses: timheuer/base64-to-file@v1.2
         with:
           fileName: keystore.jks
           encodedString: ${{ secrets.KEYSTORE_BASE64 }}
       - name: Create key.properties
+        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
         run: |
           echo "storeFile=${{ steps.android_keystore.outputs.filePath }}" > simple_live_app/android/key.properties
           echo "storePassword=${{ secrets.STORE_PASSWORD }}" >> simple_live_app/android/key.properties
@@ -63,12 +65,14 @@ jobs:
 
       #打包APK
       - name: Build APK
+        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
         run: |
           cd simple_live_app
           flutter build apk --release --split-per-abi
 
       #上传APK至Artifacts
       - name: Upload APK to Artifacts
+        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: android
@@ -130,7 +134,7 @@ jobs:
           name: "${{ steps.version.outputs.VERSION }}"
           generate_release_notes: true
           prerelease: ${{ contains(github.ref, 'beta') || contains(github.ref, 'alpha') }}
-          token: ${{ secrets.TOKEN }}
+          token: ${{ secrets.TOKEN || github.token }}
           files: |
             simple_live_app/build/app/outputs/flutter-apk/app-x86_64-release.apk
             simple_live_app/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
@@ -201,7 +205,7 @@ jobs:
           name: "${{ steps.version.outputs.VERSION }}"
           generate_release_notes: true
           prerelease: ${{ contains(github.ref, 'beta') || contains(github.ref, 'alpha') }}
-          token: ${{ secrets.TOKEN }}
+          token: ${{ secrets.TOKEN || github.token }}
           files: |
             simple_live_app/build/dist/*/*.deb
             simple_live_app/build/dist/*/*.zip
@@ -210,7 +214,7 @@ jobs:
 
   # 打包Windows
   build-windows:
-    runs-on: windows-latest
+    runs-on: windows-2022
     permissions:
       contents: write
     steps:
@@ -263,7 +267,7 @@ jobs:
           name: "${{ steps.version.outputs.VERSION }}"
           generate_release_notes: true
           prerelease: ${{ contains(github.ref, 'beta') || contains(github.ref, 'alpha') }}
-          token: ${{ secrets.TOKEN }}
+          token: ${{ secrets.TOKEN || github.token }}
           files: |
             simple_live_app/build/dist/*/*.msix
             simple_live_app/build/dist/*/*.zip
