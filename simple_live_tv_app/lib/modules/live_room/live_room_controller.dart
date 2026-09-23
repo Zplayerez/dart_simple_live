@@ -53,6 +53,11 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
   Map<String, String>? playHeaders;
 
+  /// 在当前地址到期前后台续签，断流时可以直接使用已准备好的地址。
+  Timer? _playUrlRefreshTimer;
+  bool _hasPreloadedPlayUrl = false;
+  bool _refreshingPlayUrl = false;
+
   /// 当前线路
   var currentLineIndex = -1;
   var currentLineInfo = "".obs;
@@ -90,6 +95,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   void refreshRoom() {
     //messages.clear();
 
+    _stopPlayUrlRefreshTimer();
     liveDanmaku.stop();
 
     loadData();
@@ -201,38 +207,121 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   }
 
   void getPlayUrl() async {
+    _stopPlayUrlRefreshTimer();
     playUrls.clear();
     currentQualityInfo.value = qualites[currentQuality].quality;
     currentLineInfo.value = "";
     currentLineIndex = -1;
-    var playUrl = await site.liveSite
-        .getPlayUrls(detail: detail.value!, quality: qualites[currentQuality]);
-    if (playUrl.urls.isEmpty) {
+    if (!await _refreshPlayUrl()) {
       SmartDialog.showToast("无法读取播放地址");
       return;
     }
-    playUrls.value = playUrl.urls;
-    playHeaders = playUrl.headers;
-    currentLineIndex = 0;
-    currentLineInfo.value = "线路${currentLineIndex + 1}";
     //重置错误次数
     mediaErrorRetryCount = 0;
-    setPlayer();
+    await setPlayer();
+    _startPlayUrlRefreshTimer();
   }
 
-  void changePlayLine(int index) {
+  void _startPlayUrlRefreshTimer() {
+    if (site.id != Constant.kDouyu) {
+      return;
+    }
+    _playUrlRefreshTimer?.cancel();
+    _hasPreloadedPlayUrl = false;
+    _playUrlRefreshTimer = Timer.periodic(const Duration(minutes: 4), (_) {
+      if (!liveStatus.value || isBackground || _handlingMediaFailure) {
+        return;
+      }
+      // 丢弃上一次预取结果，避免网络请求失败时继续使用已经接近过期的地址。
+      _hasPreloadedPlayUrl = false;
+      unawaited(_refreshPlayUrl(
+        refreshRoomDetail: true,
+        preload: true,
+      ));
+    });
+  }
+
+  void _stopPlayUrlRefreshTimer() {
+    _playUrlRefreshTimer?.cancel();
+    _playUrlRefreshTimer = null;
+    _hasPreloadedPlayUrl = false;
+  }
+
+  bool _consumePreloadedPlayUrl() {
+    if (!_hasPreloadedPlayUrl) {
+      return false;
+    }
+    _hasPreloadedPlayUrl = false;
+    return true;
+  }
+
+  /// 重新请求播放地址。斗鱼返回的播放地址只有短期有效，播放器重试时
+  /// 不能继续使用之前缓存的 URL。
+  Future<bool> _refreshPlayUrl({
+    bool refreshRoomDetail = false,
+    bool preload = false,
+  }) async {
+    if (detail.value == null ||
+        currentQuality < 0 ||
+        currentQuality >= qualites.length ||
+        _refreshingPlayUrl) {
+      return false;
+    }
+
+    _refreshingPlayUrl = true;
+    try {
+      if (!preload) {
+        _hasPreloadedPlayUrl = false;
+      }
+      // 斗鱼的 anti-code 也带有时间戳，播放地址过期时一起更新房间签名。
+      if (refreshRoomDetail && site.id == Constant.kDouyu) {
+        final latestDetail =
+            await site.liveSite.getRoomDetail(roomId: roomId);
+        if (!latestDetail.status && !latestDetail.isRecord) {
+          return false;
+        }
+        detail.value = latestDetail;
+        online.value = latestDetail.online;
+      }
+
+      final oldLineIndex = currentLineIndex;
+      final playUrl = await site.liveSite.getPlayUrls(
+        detail: detail.value!,
+        quality: qualites[currentQuality],
+      );
+      if (playUrl.urls.isEmpty) {
+        return false;
+      }
+
+      playUrls.value = playUrl.urls;
+      playHeaders = playUrl.headers;
+      currentLineIndex = oldLineIndex >= 0 && oldLineIndex < playUrls.length
+          ? oldLineIndex
+          : 0;
+      currentLineInfo.value = "线路${currentLineIndex + 1}";
+      _hasPreloadedPlayUrl = preload;
+      return true;
+    } catch (e) {
+      Log.logPrint(e);
+      return false;
+    } finally {
+      _refreshingPlayUrl = false;
+    }
+  }
+
+  Future<void> changePlayLine(int index) async {
     currentLineIndex = index;
     //重置错误次数
     mediaErrorRetryCount = 0;
-    setPlayer();
+    await setPlayer();
   }
 
-  void setPlayer() async {
+  Future<void> setPlayer() async {
     currentLineInfo.value = "线路${currentLineIndex + 1}";
     errorMsg.value = "";
     // 初始化播放器并设置 ao 参数
     await initializePlayer();
-    player.open(
+    await player.open(
       Media(
         playUrls[currentLineIndex],
         httpHeaders: playHeaders,
@@ -242,54 +331,84 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     Log.d("播放链接\r\n：${playUrls[currentLineIndex]}");
   }
 
-  @override
-  void mediaEnd() async {
-    if (mediaErrorRetryCount < 2) {
-      Log.d("播放结束，尝试第${mediaErrorRetryCount + 1}次刷新");
-      if (mediaErrorRetryCount == 1) {
-        //延迟一秒再刷新
-        await Future.delayed(const Duration(seconds: 1));
-      }
-      mediaErrorRetryCount += 1;
-      //刷新一次
-      setPlayer();
-      return;
-    }
+  int mediaErrorRetryCount = 0;
 
-    Log.d("播放结束");
-    // 遍历线路，如果全部链接都断开就是直播结束了
-    if (playUrls.length - 1 == currentLineIndex) {
-      liveStatus.value = false;
-    } else {
-      changePlayLine(currentLineIndex + 1);
+  /// 播放器可能同时报告 error 和 completed，避免同一次断流触发两轮重试。
+  bool _handlingMediaFailure = false;
 
-      //setPlayer();
+  Future<bool?> _getLiveStatus() async {
+    try {
+      return await site.liveSite.getLiveStatus(roomId: roomId);
+    } catch (e) {
+      Log.logPrint(e);
+      return null;
     }
   }
 
-  int mediaErrorRetryCount = 0;
-  @override
-  void mediaError(String error) async {
-    if (mediaErrorRetryCount < 2) {
-      Log.d("播放失败，尝试第${mediaErrorRetryCount + 1}次刷新");
-      if (mediaErrorRetryCount == 1) {
-        //延迟一秒再刷新
-        await Future.delayed(const Duration(seconds: 1));
-      }
-      mediaErrorRetryCount += 1;
-      //刷新一次
-      setPlayer();
-      return;
+  Future<bool> _refreshAndResume() async {
+    final status = await _getLiveStatus();
+    if (status == false) {
+      liveStatus.value = false;
+      return true;
     }
 
-    if (playUrls.length - 1 == currentLineIndex) {
-      errorMsg.value = "播放失败";
-      SmartDialog.showToast("播放失败:$error");
-    } else {
-      //currentLineIndex += 1;
-      //setPlayer();
-      changePlayLine(currentLineIndex + 1);
+    if (!_consumePreloadedPlayUrl() &&
+        !await _refreshPlayUrl(refreshRoomDetail: true)) {
+      return false;
     }
+    mediaErrorRetryCount = 0;
+    await setPlayer();
+    return true;
+  }
+
+  Future<void> _handleMediaFailure({String? error}) async {
+    if (_handlingMediaFailure) {
+      return;
+    }
+    _handlingMediaFailure = true;
+    try {
+      if (mediaErrorRetryCount < 2) {
+        final retryType = error == null ? "播放结束" : "播放失败";
+        Log.d("$retryType，尝试第${mediaErrorRetryCount + 1}次刷新");
+        if (mediaErrorRetryCount == 1) {
+          //延迟一秒再刷新
+          await Future.delayed(const Duration(seconds: 1));
+        }
+        mediaErrorRetryCount += 1;
+        //刷新播放地址后再重试，避免继续使用已过期的斗鱼 URL
+        if (!_consumePreloadedPlayUrl()) {
+          await _refreshPlayUrl(refreshRoomDetail: true);
+        }
+        await setPlayer();
+        return;
+      }
+
+      Log.d("播放结束");
+      // 遍历线路，如果全部链接都断开，先确认直播状态再显示未开播。
+      if (playUrls.length - 1 == currentLineIndex) {
+        if (await _refreshAndResume()) {
+          return;
+        }
+        if (error != null) {
+          errorMsg.value = "播放失败";
+          SmartDialog.showToast("播放失败:$error");
+        }
+      } else {
+        await changePlayLine(currentLineIndex + 1);
+      }
+    } finally {
+      _handlingMediaFailure = false;
+    }
+  }
+
+  @override
+  void mediaEnd() async {
+    await _handleMediaFailure();
+  }
+
+  @override
+  void mediaError(String error) async {
+    await _handleMediaFailure(error: error);
   }
 
   /// 添加历史记录
@@ -356,6 +475,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       return;
     }
 
+    _stopPlayUrlRefreshTimer();
     rxSite.value = site;
     rxRoomId.value = roomId;
 
@@ -439,6 +559,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
   @override
   void onClose() {
+    _stopPlayUrlRefreshTimer();
     liveDanmaku.stop();
 
     danmakuController = null;
