@@ -256,20 +256,28 @@ class LiveRoomPage extends GetView<LiveRoomController> {
     }
     return Stack(
       children: [
-        Video(
-          key: controller.globalPlayerKey,
-          controller: controller.videoController,
-          pauseUponEnteringBackgroundMode:
-              AppSettingsController.instance.playerAutoPause.value,
-          resumeUponEnteringForegroundMode:
-              AppSettingsController.instance.playerAutoPause.value,
-          controls: (state) {
-            return playerControls(state, controller);
+        Obx(
+          () {
+            final playerGeneration = controller.playerGeneration.value;
+            return KeyedSubtree(
+              key: ValueKey(playerGeneration),
+              child: Video(
+                key: controller.globalPlayerKey,
+                controller: controller.videoController,
+                pauseUponEnteringBackgroundMode:
+                    AppSettingsController.instance.playerAutoPause.value,
+                resumeUponEnteringForegroundMode:
+                    AppSettingsController.instance.playerAutoPause.value,
+                controls: (state) {
+                  return playerControls(state, controller);
+                },
+                aspectRatio: aspectRatio,
+                fit: boxFit,
+                // 自己实现
+                wakelock: false,
+              ),
+            );
           },
-          aspectRatio: aspectRatio,
-          fit: boxFit,
-          // 自己实现
-          wakelock: false,
         ),
         Obx(
           () => Visibility(

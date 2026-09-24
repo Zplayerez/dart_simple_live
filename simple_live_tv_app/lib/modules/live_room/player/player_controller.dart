@@ -17,18 +17,45 @@ mixin PlayerMixin {
   GlobalKey globalDanmuKey = GlobalKey();
 
   /// 播放器实例
-  late final player = Player(
-    configuration: const PlayerConfiguration(
-      title: "Simple Live Player",
-      // bufferSize:
-      //     // media-kit #549
-      //     AppSettingsController.instance.playerBufferSize.value * 1024 * 1024,
-    ),
-  );
+  late Player player;
+  late VideoController videoController;
+
+  Player createPlayer() {
+    return Player(
+      configuration: const PlayerConfiguration(
+        title: "Simple Live Player",
+        // bufferSize:
+        //     // media-kit #549
+        //     AppSettingsController.instance.playerBufferSize.value * 1024 * 1024,
+      ),
+    );
+  }
+
+  VideoController createVideoController(Player targetPlayer) {
+    return VideoController(
+      targetPlayer,
+      configuration: AppSettingsController.instance.playerCompatMode.value
+          ? const VideoControllerConfiguration(
+              vo: 'mediacodec_embed',
+              hwdec: 'mediacodec',
+            )
+          : VideoControllerConfiguration(
+              enableHardwareAcceleration:
+                  AppSettingsController.instance.hardwareDecode.value,
+              androidAttachSurfaceAfterVideoParameters: false,
+            ),
+    );
+  }
+
+  void initPlayer() {
+    player = createPlayer();
+    videoController = createVideoController(player);
+  }
 
   /// 初始化播放器并设置 ao 参数
-  Future<void> initializePlayer() async {
-    var pp = player.platform as NativePlayer;
+  Future<void> initializePlayer([Player? targetPlayer]) async {
+    final currentPlayer = targetPlayer ?? player;
+    var pp = currentPlayer.platform as NativePlayer;
 
     // media_kit 仓库更新导致的问题，临时解决办法
     if (Platform.isAndroid) {
@@ -36,20 +63,6 @@ mixin PlayerMixin {
     }
   }
 
-  /// 视频控制器
-  late final videoController = VideoController(
-    player,
-    configuration: AppSettingsController.instance.playerCompatMode.value
-        ? const VideoControllerConfiguration(
-            vo: 'mediacodec_embed',
-            hwdec: 'mediacodec',
-          )
-        : VideoControllerConfiguration(
-            enableHardwareAcceleration:
-                AppSettingsController.instance.hardwareDecode.value,
-            androidAttachSurfaceAfterVideoParameters: false,
-          ),
-  );
 }
 mixin PlayerStateMixin on PlayerMixin {
   /// 是否显示弹幕
@@ -222,10 +235,14 @@ class PlayerController extends BaseController
     with PlayerMixin, PlayerStateMixin, PlayerDanmakuMixin, PlayerSystemMixin {
   @override
   void onInit() {
+    initPlayer();
     initSystem();
     initStream();
     super.onInit();
   }
+
+  /// 播放器切换后让页面重新挂载 Video，并把事件监听转移到新播放器。
+  RxInt playerGeneration = 0.obs;
 
   var width = 0.obs;
   var height = 0.obs;
@@ -276,6 +293,25 @@ class PlayerController extends BaseController
     _widthSubscription?.cancel();
     _heightSubscription?.cancel();
     _logSubscription?.cancel();
+  }
+
+  Future<void> replacePlayer(
+    Player nextPlayer,
+    VideoController nextVideoController,
+  ) async {
+    final oldPlayer = player;
+    final volume = oldPlayer.state.volume;
+
+    disposeStream();
+    player = nextPlayer;
+    videoController = nextVideoController;
+    globalPlayerKey = GlobalKey<VideoState>();
+    initStream();
+    playerGeneration.value++;
+
+    // 备用播放器在预连接时静音，切换完成后恢复用户原来的音量。
+    await player.setVolume(volume);
+    await oldPlayer.dispose();
   }
 
   void mediaEnd() {}

@@ -27,22 +27,54 @@ mixin PlayerMixin {
   GlobalKey globalDanmuKey = GlobalKey();
 
   /// 播放器实例
-  late final player = Player(
-    configuration: PlayerConfiguration(
-      title: "Simple Live Player",
-      logLevel: AppSettingsController.instance.logEnable.value
-          ? MPVLogLevel.info
-          : MPVLogLevel.error,
-    ),
-  );
+  late Player player;
+  late VideoController videoController;
+
+  Player createPlayer() {
+    return Player(
+      configuration: PlayerConfiguration(
+        title: "Simple Live Player",
+        logLevel: AppSettingsController.instance.logEnable.value
+            ? MPVLogLevel.info
+            : MPVLogLevel.error,
+      ),
+    );
+  }
+
+  VideoController createVideoController(Player targetPlayer) {
+    return VideoController(
+      targetPlayer,
+      configuration: AppSettingsController.instance.customPlayerOutput.value
+          ? VideoControllerConfiguration(
+              vo: AppSettingsController.instance.videoOutputDriver.value,
+              hwdec: AppSettingsController.instance.videoHardwareDecoder.value,
+            )
+          : AppSettingsController.instance.playerCompatMode.value
+              ? const VideoControllerConfiguration(
+                  vo: 'mediacodec_embed',
+                  hwdec: 'mediacodec',
+                )
+              : VideoControllerConfiguration(
+                  enableHardwareAcceleration:
+                      AppSettingsController.instance.hardwareDecode.value,
+                  androidAttachSurfaceAfterVideoParameters: false,
+                ),
+    );
+  }
+
+  void initPlayer() {
+    player = createPlayer();
+    videoController = createVideoController(player);
+  }
 
   /// 初始化播放器并设置 ao 参数
-  Future<void> initializePlayer() async {
-    var pp = player.platform as NativePlayer;
+  Future<void> initializePlayer([Player? targetPlayer]) async {
+    final currentPlayer = targetPlayer ?? player;
+    var pp = currentPlayer.platform as NativePlayer;
     // 设置音频输出驱动
     if (AppSettingsController.instance.customPlayerOutput.value) {
-      if (player.platform is NativePlayer) {
-        await (player.platform as dynamic).setProperty(
+      if (currentPlayer.platform is NativePlayer) {
+        await (currentPlayer.platform as dynamic).setProperty(
           'ao',
           AppSettingsController.instance.audioOutputDriver.value,
         );
@@ -54,25 +86,6 @@ mixin PlayerMixin {
     }
   }
 
-  /// 视频控制器
-  late final videoController = VideoController(
-    player,
-    configuration: AppSettingsController.instance.customPlayerOutput.value
-        ? VideoControllerConfiguration(
-            vo: AppSettingsController.instance.videoOutputDriver.value,
-            hwdec: AppSettingsController.instance.videoHardwareDecoder.value,
-          )
-        : AppSettingsController.instance.playerCompatMode.value
-            ? const VideoControllerConfiguration(
-                vo: 'mediacodec_embed',
-                hwdec: 'mediacodec',
-              )
-            : VideoControllerConfiguration(
-                enableHardwareAcceleration:
-                    AppSettingsController.instance.hardwareDecode.value,
-                androidAttachSurfaceAfterVideoParameters: false,
-              ),
-  );
 }
 
 mixin PlayerStateMixin on PlayerMixin {
@@ -661,12 +674,16 @@ class PlayerController extends BaseController
         PlayerGestureControlMixin {
   @override
   void onInit() {
+    initPlayer();
     initSystem();
     initStream();
     //设置音量
     player.setVolume(AppSettingsController.instance.playerVolume.value);
     super.onInit();
   }
+
+  /// 播放器切换后让页面重新挂载 Video，并把事件监听转移到新播放器。
+  RxInt playerGeneration = 0.obs;
 
   StreamSubscription<String>? _errorSubscription;
   StreamSubscription? _completedSubscription;
@@ -724,6 +741,25 @@ class PlayerController extends BaseController
     _logSubscription?.cancel();
     _pipSubscription?.cancel();
     _playingSubscription?.cancel();
+  }
+
+  Future<void> replacePlayer(
+    Player nextPlayer,
+    VideoController nextVideoController,
+  ) async {
+    final oldPlayer = player;
+    final volume = oldPlayer.state.volume;
+
+    disposeStream();
+    player = nextPlayer;
+    videoController = nextVideoController;
+    globalPlayerKey = GlobalKey<VideoState>();
+    initStream();
+    playerGeneration.value++;
+
+    // 备用播放器在预连接时静音，切换完成后恢复用户原来的音量。
+    await player.setVolume(volume);
+    await oldPlayer.dispose();
   }
 
   void mediaEnd() {

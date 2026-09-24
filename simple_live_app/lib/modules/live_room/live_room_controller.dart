@@ -7,6 +7,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:get/get.dart';
 import 'package:media_kit/media_kit.dart';
+import 'package:media_kit_video/media_kit_video.dart';
 import 'package:canvas_danmaku/canvas_danmaku.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:simple_live_app/app/app_style.dart';
@@ -78,6 +79,17 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   Timer? _playUrlRefreshTimer;
   bool _hasPreloadedPlayUrl = false;
   bool _refreshingPlayUrl = false;
+
+  /// 斗鱼播放地址到期前预连接备用播放器，切换时不重启当前画面。
+  Player? _standbyPlayer;
+  VideoController? _standbyVideoController;
+  StreamSubscription? _standbyErrorSubscription;
+  StreamSubscription? _standbyPlayingSubscription;
+  StreamSubscription? _standbyWidthSubscription;
+  StreamSubscription? _standbyHeightSubscription;
+  Completer<bool>? _standbyReadyCompleter;
+  bool _preparingStandbyPlayer = false;
+  bool _switchingStandbyPlayer = false;
 
   /// 当前线路
   var currentLineIndex = -1;
@@ -421,12 +433,9 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       if (!liveStatus.value || isBackground || _handlingMediaFailure) {
         return;
       }
-      // 丢弃上一次预取结果，避免网络请求失败时继续使用已经接近过期的地址。
+      // 旧地址约 5 分钟后失效，先用新地址连接备用播放器，连接成功后再切换。
       _hasPreloadedPlayUrl = false;
-      unawaited(_refreshPlayUrl(
-        refreshRoomDetail: true,
-        preload: true,
-      ));
+      unawaited(_prepareStandbyPlayer());
     });
   }
 
@@ -434,6 +443,150 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     _playUrlRefreshTimer?.cancel();
     _playUrlRefreshTimer = null;
     _hasPreloadedPlayUrl = false;
+    _disposeStandbyPlayer();
+  }
+
+  void _cancelStandbySubscriptions() {
+    _standbyErrorSubscription?.cancel();
+    _standbyPlayingSubscription?.cancel();
+    _standbyWidthSubscription?.cancel();
+    _standbyHeightSubscription?.cancel();
+    _standbyErrorSubscription = null;
+    _standbyPlayingSubscription = null;
+    _standbyWidthSubscription = null;
+    _standbyHeightSubscription = null;
+  }
+
+  void _disposeStandbyPlayer() {
+    final ready = _standbyReadyCompleter;
+    _standbyReadyCompleter = null;
+    if (ready != null && !ready.isCompleted) {
+      ready.complete(false);
+    }
+    _cancelStandbySubscriptions();
+    final standby = _standbyPlayer;
+    _standbyPlayer = null;
+    _standbyVideoController = null;
+    if (standby != null) {
+      unawaited(standby.dispose());
+    }
+  }
+
+  Future<bool> _waitForStandbyPlayer(Player standby) async {
+    final ready = Completer<bool>();
+    _standbyReadyCompleter = ready;
+    Timer? timeout;
+
+    void finish(bool value) {
+      if (ready.isCompleted) {
+        return;
+      }
+      timeout?.cancel();
+      ready.complete(value);
+    }
+
+    void checkReady([Object? _]) {
+      if (standby.state.playing &&
+          (standby.state.width ?? 0) > 0 &&
+          (standby.state.height ?? 0) > 0) {
+        finish(true);
+      }
+    }
+
+    _standbyPlayingSubscription = standby.stream.playing.listen(checkReady);
+    _standbyWidthSubscription = standby.stream.width.listen(checkReady);
+    _standbyHeightSubscription = standby.stream.height.listen(checkReady);
+    _standbyErrorSubscription = standby.stream.error.listen((event) {
+      Log.d("备用播放器错误：$event");
+      finish(false);
+    });
+    timeout = Timer(const Duration(seconds: 45), () => finish(false));
+    checkReady();
+
+    final result = await ready.future;
+    if (identical(_standbyReadyCompleter, ready)) {
+      _standbyReadyCompleter = null;
+    }
+    _cancelStandbySubscriptions();
+    return result;
+  }
+
+  Future<void> _prepareStandbyPlayer() async {
+    if (_preparingStandbyPlayer ||
+        _switchingStandbyPlayer ||
+        _standbyPlayer != null ||
+        !liveStatus.value ||
+        isBackground) {
+      return;
+    }
+
+    _preparingStandbyPlayer = true;
+    final activePlayer = player;
+    Player? standby;
+    try {
+      if (!await _refreshPlayUrl(refreshRoomDetail: true, preload: true)) {
+        return;
+      }
+      if (_playUrlRefreshTimer == null || !identical(player, activePlayer)) {
+        return;
+      }
+
+      final urls = List<String>.from(playUrls);
+      final headers = playHeaders == null
+          ? null
+          : Map<String, String>.from(playHeaders!);
+      final lineIndex = currentLineIndex;
+      standby = createPlayer();
+      final standbyVideoController = createVideoController(standby);
+      _standbyPlayer = standby;
+      _standbyVideoController = standbyVideoController;
+
+      await initializePlayer(standby);
+      await standby.setVolume(0);
+      final mediaList = urls.map((url) {
+        var finalUrl = url;
+        if (AppSettingsController.instance.playerForceHttps.value) {
+          finalUrl = finalUrl.replaceAll("http://", "https://");
+        }
+        return Media(finalUrl, httpHeaders: headers);
+      }).toList();
+      await standby.open(Playlist(mediaList));
+      if (lineIndex > 0 && lineIndex < mediaList.length) {
+        await standby.jump(lineIndex);
+      }
+
+      if (!await _waitForStandbyPlayer(standby) ||
+          !identical(_standbyPlayer, standby) ||
+          !identical(player, activePlayer)) {
+        return;
+      }
+
+      _switchingStandbyPlayer = true;
+      final nextVideoController = _standbyVideoController;
+      _standbyPlayer = null;
+      _standbyVideoController = null;
+      if (nextVideoController == null) {
+        return;
+      }
+      _cancelStandbySubscriptions();
+      await replacePlayer(standby, nextVideoController);
+      _hasPreloadedPlayUrl = false;
+      mediaErrorRetryCount = 0;
+      Log.d("斗鱼播放地址已提前切换");
+      standby = null;
+    } catch (e) {
+      Log.logPrint(e);
+    } finally {
+      _preparingStandbyPlayer = false;
+      _switchingStandbyPlayer = false;
+      if (standby != null) {
+        if (identical(_standbyPlayer, standby)) {
+          _disposeStandbyPlayer();
+        } else {
+          unawaited(standby.dispose());
+        }
+      }
+    }
   }
 
   bool _consumePreloadedPlayUrl() {
@@ -499,6 +652,8 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   }
 
   Future<void> changePlayLine(int index) async {
+    _disposeStandbyPlayer();
+    _hasPreloadedPlayUrl = false;
     currentLineIndex = index;
     //重置错误次数
     mediaErrorRetryCount = 0;
@@ -1134,12 +1289,16 @@ ${error?.stackTrace}''');
       Log.d("进入后台");
       //进入后台，关闭弹幕
       danmakuController?.clear();
+      _disposeStandbyPlayer();
       isBackground = true;
     } else
     //返回前台
     if (state == AppLifecycleState.resumed) {
       Log.d("返回前台");
       isBackground = false;
+      if (site.id == Constant.kDouyu) {
+        unawaited(_prepareStandbyPlayer());
+      }
     }
   }
 

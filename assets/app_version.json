@@ -1,7 +1,7 @@
 {
-  "version": "1.11.5",
-  "version_num": 11105,
-  "version_desc": "- 修复斗鱼直播播放地址过期后反复刷新",
+  "version": "1.11.6",
+  "version_num": 11106,
+  "version_desc": "- 斗鱼播放地址到期前无缝切换，减少播放暂停",
   "prerelease": false,
   "download_url": "https://github.com/xiaoyaocz/dart_simple_live/releases"
 }
