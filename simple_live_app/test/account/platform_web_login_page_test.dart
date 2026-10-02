@@ -102,11 +102,13 @@ void main() {
   tearDown(() => Get.reset());
 
   Future<void> mount(WidgetTester tester,
-      {Future<WebViewEnvironment?> Function()? prepare}) async {
+      {Future<WebViewEnvironment?> Function()? prepare,
+      Future<void> Function(String)? prepareAccount}) async {
     await tester.pumpWidget(MaterialApp(
         home: PlatformWebLoginPage(
       siteId: 'douyu',
       prepareEnvironment: prepare ?? () async => null,
+      prepareAccount: prepareAccount ?? (_) async {},
     )));
     await tester.pump();
   }
@@ -126,6 +128,40 @@ void main() {
     callbacks.onLoadStop!(controller, official);
     await tester.pump();
   }
+
+  testWidgets(
+      'pending logout cleanup finishes before a login browser is created',
+      (tester) async {
+    final cleanup = Completer<void>();
+    var environmentCalls = 0;
+    await mount(tester,
+        prepareAccount: (_) => cleanup.future,
+        prepare: () async {
+          environmentCalls++;
+          return null;
+        });
+    expect(environmentCalls, 0);
+    expect(platform.views, isEmpty);
+    expect(canComplete(tester), isFalse);
+    cleanup.complete();
+    await tester.pump();
+    expect(environmentCalls, 1);
+    expect(platform.views, hasLength(1));
+  });
+
+  testWidgets('cleanup failure offers retry without opening the official site',
+      (tester) async {
+    var attempts = 0;
+    await mount(tester, prepareAccount: (_) async {
+      if (++attempts == 1) throw StateError('Synthetic private cleanup error');
+    });
+    expect(platform.views, isEmpty);
+    expect(find.textContaining('无法清理此前的登录状态'), findsOneWidget);
+    expect(find.textContaining('Synthetic'), findsNothing);
+    await tester.tap(find.text('重试打开官网'));
+    await tester.pump();
+    expect(platform.views, hasLength(1));
+  });
 
   testWidgets(
       'read failure clears busy and retry replaces stale error with progress',

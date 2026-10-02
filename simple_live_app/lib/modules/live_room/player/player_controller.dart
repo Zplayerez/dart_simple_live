@@ -31,6 +31,9 @@ mixin PlayerMixin {
   late VideoController videoController;
 
   Player createPlayer() {
+    // Loading libmpv is synchronous native work; the home screen does not need
+    // it. media_kit guards repeated calls, including seamless player swaps.
+    MediaKit.ensureInitialized();
     return Player(
       configuration: PlayerConfiguration(
         title: "Simple Live Player",

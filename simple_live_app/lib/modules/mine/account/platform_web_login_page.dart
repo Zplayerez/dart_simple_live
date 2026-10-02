@@ -23,10 +23,13 @@ class PlatformWebLoginPage extends StatefulWidget {
   /// Allows widget tests to exercise native lifecycle failures without a runtime.
   @visibleForTesting
   final Future<WebViewEnvironment?> Function()? prepareEnvironment;
+  @visibleForTesting
+  final Future<void> Function(String)? prepareAccount;
 
   const PlatformWebLoginPage({
     required this.siteId,
     this.prepareEnvironment,
+    this.prepareAccount,
     super.key,
   });
 
@@ -98,6 +101,14 @@ class _PlatformWebLoginPageState extends State<PlatformWebLoginPage> {
         _fail(generation, '当前系统暂不支持应用内网页登录，请使用 Cookie 导入。');
         return;
       }
+      try {
+        await (widget.prepareAccount ??
+            PlatformAccountManager.instance.prepareWebLogin)(widget.siteId);
+      } catch (_) {
+        _fail(generation, '无法清理此前的登录状态，请重试或使用 Cookie 导入。');
+        return;
+      }
+      if (!_active(generation)) return;
       final environment = await (widget.prepareEnvironment ??
           preparePlatformWebLoginEnvironment)();
       if (!_active(generation)) return;

@@ -84,6 +84,7 @@ dependencies:
 
 
 dev_dependencies:
+  flutter_secure_storage: 9.2.4 # Isolated native startup test credentials
   flutter_lints: ^2.0.0
   path_provider_platform_interface: 2.1.3
   build_runner: ^2.3.3

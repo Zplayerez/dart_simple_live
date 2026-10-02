@@ -6,6 +6,9 @@ import 'package:simple_live_core/simple_live_core.dart';
 
 class MemoryCredentialStore implements CredentialStore {
   final values = <String, String>{};
+  int reads = 0;
+  int writes = 0;
+  int deletes = 0;
   bool failWrites = false;
   bool failReads = false;
   bool failDeletes = false;
@@ -15,12 +18,14 @@ class MemoryCredentialStore implements CredentialStore {
 
   @override
   Future<String?> read(String siteId) async {
+    reads++;
     if (failReads) throw StateError('Synthetic storage failure');
     return values[siteId];
   }
 
   @override
   Future<void> write(String siteId, String cookie) async {
+    writes++;
     if (!writeStarted.isCompleted) writeStarted.complete();
     await writeGate?.future;
     if (failWrites) throw StateError('Synthetic storage failure');
@@ -29,8 +34,23 @@ class MemoryCredentialStore implements CredentialStore {
 
   @override
   Future<void> delete(String siteId) async {
+    deletes++;
     if (failDeletes) throw StateError('Synthetic storage failure');
     values.remove(siteId);
+  }
+}
+
+class DelayedReadStore extends MemoryCredentialStore {
+  final started = Completer<void>();
+  final result = Completer<String?>();
+
+  @override
+  Future<String?> read(String siteId) {
+    if (siteId == 'bilibili' && !started.isCompleted) {
+      started.complete();
+      return result.future;
+    }
+    return super.read(siteId);
   }
 }
 
@@ -77,6 +97,169 @@ String syntheticDouyinWebHeader() => [
 ].join('; ');
 
 void main() {
+  test('startup restores secure credentials without rewriting them', () async {
+    final store = MemoryCredentialStore()
+      ..values.addAll({
+        'bilibili': 'SESSDATA=synthetic',
+        'douyu': 'acf_auth=synthetic',
+        'huya': 'udb_biztoken=synthetic',
+        'douyin': 'sessionid=synthetic',
+      });
+    var markerWrites = 0;
+    final manager = managerWith(
+      store,
+      writeBlocked: (_, __) async {
+        markerWrites++;
+      },
+    );
+    await manager.initialize();
+    for (final siteId in store.values.keys) {
+      expect(manager.credentialFor(siteId), store.values[siteId]);
+      expect(manager.account(siteId).persistence, AccountPersistence.secure);
+      expect(manager.account(siteId).status, LiveAccountStatus.configured);
+    }
+    expect(store.writes, 0);
+    expect(store.reads, 4);
+    expect(markerWrites, 0);
+  });
+
+  test(
+    'startup skips storage and browser work for logged-out accounts',
+    () async {
+      final store = MemoryCredentialStore()
+        ..values['bilibili'] = 'SESSDATA=synthetic-residual';
+      var browserStarts = 0;
+      final manager = managerWith(
+        store,
+        readBlocked: (_) async => true,
+        cleanup: (_) async {
+          browserStarts++;
+        },
+      );
+      await manager.initialize();
+      expect(manager.sessionFor('bilibili'), isNull);
+      expect(manager.account('bilibili').status, LiveAccountStatus.signedOut);
+      expect(browserStarts, 0);
+      expect(store.reads, 0);
+      expect(store.writes, 0);
+      expect(store.deletes, 0);
+    },
+  );
+
+  test(
+    'startup restores a secure account even when keychain writes fail',
+    () async {
+      final store = MemoryCredentialStore()
+        ..values['bilibili'] = 'SESSDATA=synthetic'
+        ..failWrites = true;
+      var removed = false;
+      final manager = managerWith(
+        store,
+        removeLegacy: (id) async {
+          if (id == 'bilibili') removed = true;
+        },
+      );
+      await Future.wait([manager.initialize(), manager.initialize()]);
+      expect(store.reads, 4, reason: 'Initialization must only restore once.');
+      expect(
+        removed,
+        isTrue,
+        reason: 'Retry legacy cleanup after a safe read.',
+      );
+      expect(
+        manager.account('bilibili').persistence,
+        AccountPersistence.secure,
+      );
+      expect(manager.account('bilibili').storageMessage, isNull);
+    },
+  );
+
+  for (final action in ['import', 'logout']) {
+    test(
+      'a delayed startup restore cannot overwrite a newer $action',
+      () async {
+        final store = DelayedReadStore();
+        final manager = managerWith(store);
+        final initialization = manager.initialize();
+        await store.started.future;
+        if (action == 'import') {
+          await manager.importCookie(
+            'bilibili',
+            'SESSDATA=synthetic-new',
+            verify: false,
+          );
+        } else {
+          await manager.logout('bilibili');
+        }
+        store.result.complete('SESSDATA=synthetic-old');
+        await initialization;
+        expect(
+          manager.credentialFor('bilibili'),
+          action == 'import' ? 'SESSDATA=synthetic-new' : '',
+        );
+        expect(manager.account('bilibili').revision, 1);
+      },
+    );
+  }
+
+  test(
+    'web login retries blocked logout cleanup before reusing browser cookies',
+    () async {
+      final store = MemoryCredentialStore()
+        ..values['bilibili'] = 'SESSDATA=synthetic-residual';
+      final pending = Completer<void>();
+      var browserStarts = 0;
+      var prepared = false;
+      final manager = managerWith(
+        store,
+        readBlocked: (_) async => true,
+        cleanup: (_) async {
+          browserStarts++;
+          await pending.future;
+        },
+      );
+      await manager.initialize();
+      expect(browserStarts, 0);
+      final preparation = manager
+          .prepareWebLogin('bilibili')
+          .then((_) => prepared = true);
+      await pumpEventQueue();
+      expect(browserStarts, 1);
+      expect(prepared, isFalse);
+      pending.complete();
+      await preparation;
+      expect(store.values, isEmpty);
+      expect(manager.sessionFor('bilibili'), isNull);
+    },
+  );
+
+  test(
+    'web login does not reuse a browser when logout cleanup fails',
+    () async {
+      final manager = managerWith(
+        MemoryCredentialStore(),
+        readBlocked: (_) async => true,
+        cleanup: (_) async => throw StateError('Synthetic cleanup failure'),
+      );
+      await manager.initialize();
+      await expectLater(manager.prepareWebLogin('bilibili'), throwsStateError);
+      expect(manager.account('bilibili').status, LiveAccountStatus.signedOut);
+    },
+  );
+
+  test('web login keeps existing cookies when no logout is pending', () async {
+    var cleanups = 0;
+    final manager = managerWith(
+      MemoryCredentialStore(),
+      readBlocked: (_) async => false,
+      cleanup: (_) async {
+        cleanups++;
+      },
+    );
+    await manager.prepareWebLogin('bilibili');
+    expect(cleanups, 0);
+  });
+
   test(
     'verification of a rotated token supersedes an old expiry response',
     () async {

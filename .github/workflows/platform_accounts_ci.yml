@@ -93,6 +93,18 @@ jobs:
         timeout-minutes: 10
         working-directory: simple_live_app
         run: flutter drive -d windows --driver=test_driver/windows_webview_smoke_driver.dart --target=integration_test/windows_webview_smoke_test.dart --dart-define=INTEGRATION_TEST_SHOULD_REPORT_RESULTS_TO_NATIVE=false
+      - name: Windows startup and first player smoke test
+        if: matrix.platform == 'windows'
+        timeout-minutes: 10
+        working-directory: simple_live_app
+        run: flutter drive --profile -d windows --driver=test_driver/windows_startup_smoke_driver.dart --target=integration_test/windows_startup_smoke_test.dart --dart-define=INTEGRATION_TEST_SHOULD_REPORT_RESULTS_TO_NATIVE=false
+      - name: Windows startup evidence
+        if: always() && matrix.platform == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: accounts-windows-startup-smoke
+          path: simple_live_app/build/windows-startup-smoke
+          retention-days: 7
       - name: Windows WebView runtime evidence
         if: always() && matrix.platform == 'windows'
         uses: actions/upload-artifact@v4

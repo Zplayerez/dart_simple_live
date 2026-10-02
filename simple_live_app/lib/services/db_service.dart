@@ -13,10 +13,12 @@ class DBService extends GetxService {
   late Box<FollowUserTag> tagBox;
   final Uuid uuid = const Uuid();
 
-  Future init() async {
-    historyBox = await Hive.openBox("History");
-    followBox = await Hive.openBox("FollowUser");
-    tagBox = await Hive.openBox("FollowUserTag");
+  Future<void> init() async {
+    await Future.wait([
+      Hive.openBox<History>("History").then((box) => historyBox = box),
+      Hive.openBox<FollowUser>("FollowUser").then((box) => followBox = box),
+      Hive.openBox<FollowUserTag>("FollowUserTag").then((box) => tagBox = box),
+    ]);
   }
 
   // follow_user_tag 相关逻辑

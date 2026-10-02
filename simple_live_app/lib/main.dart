@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -9,12 +10,12 @@ import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:get/get.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:logger/logger.dart';
-import 'package:media_kit/media_kit.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:simple_live_app/app/app_style.dart';
 import 'package:simple_live_app/app/controller/app_settings_controller.dart';
 import 'package:simple_live_app/app/log.dart';
+import 'package:simple_live_app/app/startup_timings.dart';
 import 'package:simple_live_app/app/utils.dart';
 import 'package:simple_live_app/app/utils/listen_fourth_button.dart';
 import 'package:simple_live_app/models/db/follow_user.dart';
@@ -39,18 +40,22 @@ import 'package:window_manager/window_manager.dart';
 import 'package:path/path.dart' as p;
 import 'package:dynamic_color/dynamic_color.dart';
 
-void main() async {
+Future<void> main() async {
+  final timings = StartupTimings();
   WidgetsFlutterBinding.ensureInitialized();
-  await migrateData();
-  await initWindow();
-  MediaKit.ensureInitialized();
-  await Hive.initFlutter(
-    (!Platform.isAndroid && !Platform.isIOS)
-        ? (await getApplicationSupportDirectory()).path
-        : null,
-  );
+  await Future.wait([
+    timings.measure('dataMigration', migrateData),
+    timings.measure('window', initWindow),
+  ]);
+  await timings.measure('hive', () async {
+    await Hive.initFlutter(
+      (!Platform.isAndroid && !Platform.isIOS)
+          ? (await getApplicationSupportDirectory()).path
+          : null,
+    );
+  });
   //初始化服务
-  await initServices();
+  await initServices(timings);
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
   //设置状态栏为透明
   SystemUiOverlayStyle systemUiOverlayStyle = const SystemUiOverlayStyle(
@@ -60,6 +65,17 @@ void main() async {
   );
   SystemChrome.setSystemUIOverlayStyle(systemUiOverlayStyle);
   runApp(const MyApp());
+  unawaited(_afterFirstFrame(timings));
+}
+
+Future<void> _afterFirstFrame(StartupTimings timings) async {
+  // An unawaited call before runApp still executes synchronous work before the
+  // first frame. Wait for the rasterizer before starting optional services.
+  await WidgetsBinding.instance.waitUntilFirstFrameRasterized;
+  timings.firstFrameRasterized();
+  Log.d('[Startup] ${jsonEncode(timings.toJson())}');
+  unawaited(PlatformAccountManager.instance.verifyAll());
+  Get.find<SyncService>();
 }
 
 /// 将Hive数据迁移到Application Support
@@ -119,19 +135,23 @@ Future initWindow() async {
   });
 }
 
-Future initServices() async {
+Future<void> initServices(StartupTimings timings) async {
   Hive.registerAdapter(FollowUserAdapter());
   Hive.registerAdapter(HistoryAdapter());
   Hive.registerAdapter(FollowUserTagAdapter());
 
-  //包信息
-  Utils.packageInfo = await PackageInfo.fromPlatform();
-  //本地存储
-  Log.d("Init LocalStorage Service");
-  await Get.put(LocalStorageService()).init();
-  await Get.put(DBService()).init();
+  // These files and the package metadata are independent. Settings are only
+  // constructed after every required box is ready, including a custom home.
+  await Future.wait([
+    timings.measure('packageInfo', () async {
+      Utils.packageInfo = await PackageInfo.fromPlatform();
+    }),
+    timings.measure(
+        'settingsStorage', () => Get.put(LocalStorageService()).init()),
+    timings.measure('database', () => Get.put(DBService()).init()),
+  ]);
   //初始化设置控制器
-  Get.put(AppSettingsController());
+  timings.measureSync('settings', () => Get.put(AppSettingsController()));
 
   final storage = LocalStorageService.instance;
   const legacyKeys = <String, String>{
@@ -147,7 +167,9 @@ Future initServices() async {
       },
       removeLegacyCredential: (siteId) async {
         final key = legacyKeys[siteId];
-        if (key != null) await storage.removeValue(key);
+        if (key != null && storage.settingsBox.containsKey(key)) {
+          await storage.removeValue(key);
+        }
       },
       readRestoreBlocked: (siteId) async =>
           storage.settingsBox.get(
@@ -169,16 +191,15 @@ Future initServices() async {
       clearWebCookies: clearPlatformWebCookies,
     ),
   );
-  await accounts.initialize();
+  await timings.measure('accountRestore', accounts.initialize);
 
   Get.put(BiliBiliAccountService());
 
   Get.put(DouyinAccountService());
 
-  // Verification must not delay the first frame or overwrite a later import.
-  unawaited(accounts.verifyAll());
-
-  Get.put(SyncService());
+  // Pages can resolve the service immediately if needed. Ordinarily its
+  // network listeners are started by _afterFirstFrame, not on the launch path.
+  Get.lazyPut<SyncService>(() => SyncService());
 
   Get.put(FollowService());
 

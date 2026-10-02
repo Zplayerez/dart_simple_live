@@ -1,0 +1,64 @@
+name: Windows startup comparison
+
+on:
+  push:
+    branches: [feat/platform-accounts]
+    paths: ['.github/workflows/startup_performance.yml']
+  workflow_dispatch:
+    inputs:
+      baseline:
+        description: Published baseline ref
+        default: v1.11.7
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: windows-2022
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: optimized
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.baseline || 'v1.11.7' }}
+          path: baseline
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.38.10'
+          cache: true
+      - name: Copy the identical isolated startup harness to the baseline
+        shell: pwsh
+        run: |
+          Copy-Item optimized/simple_live_app/integration_test/windows_startup_smoke_test.dart baseline/simple_live_app/integration_test/
+          Copy-Item optimized/simple_live_app/test_driver/windows_startup_smoke_driver.dart baseline/simple_live_app/test_driver/
+      - name: Compare three fresh launches per build on the same runner
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force startup-results | Out-Null
+          foreach ($variant in @('baseline', 'optimized')) {
+            Push-Location "$variant/simple_live_app"
+            flutter pub get --enforce-lockfile
+            if ($LASTEXITCODE -ne 0) { throw 'Dependency resolution failed' }
+            flutter build windows --profile --target=integration_test/windows_startup_smoke_test.dart --dart-define=INTEGRATION_TEST_SHOULD_REPORT_RESULTS_TO_NATIVE=false
+            if ($LASTEXITCODE -ne 0) { throw 'Startup fixture build failed' }
+            Pop-Location
+          }
+          foreach ($attempt in 1..3) {
+            foreach ($variant in @('baseline', 'optimized')) {
+              Push-Location "$variant/simple_live_app"
+              flutter drive --profile --no-build -d windows --driver=test_driver/windows_startup_smoke_driver.dart --target=integration_test/windows_startup_smoke_test.dart --dart-define=INTEGRATION_TEST_SHOULD_REPORT_RESULTS_TO_NATIVE=false
+              if ($LASTEXITCODE -ne 0) { throw "$variant startup check failed" }
+              Copy-Item build/windows-startup-smoke/report.json "../../startup-results/$variant-$attempt.json"
+              Pop-Location
+            }
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-startup-comparison
+          path: startup-results
+          retention-days: 14

@@ -52,6 +52,7 @@ class PlatformAccountManager extends GetxService {
   final Map<String, LiveAccountSession> _sessions = {};
   final Map<String, Future<void>> _storeTasks = {};
   final Map<String, int> _verificationAttempts = {};
+  Future<void>? _initialization;
 
   PlatformAccountState account(String siteId) {
     final state = accounts[siteId];
@@ -65,7 +66,9 @@ class PlatformAccountManager extends GetxService {
   /// Never include its return value in logs, settings or ordinary backups.
   String credentialFor(String siteId) => _sessions[siteId]?.cookie.header ?? '';
 
-  Future<void> initialize() async {
+  Future<void> initialize() => _initialization ??= _initialize();
+
+  Future<void> _initialize() async {
     await Future.wait(_sites.keys.map(_restore));
   }
 
@@ -74,18 +77,23 @@ class PlatformAccountManager extends GetxService {
   }
 
   Future<void> _restore(String siteId) async {
+    final revision = account(siteId).revision;
+    if (revision != 0) return;
     try {
       if (await readRestoreBlocked?.call(siteId) == true) {
-        await logout(siteId);
+        // Keep the logout tombstone without reopening the browser on every
+        // launch. Cleanup is retried before an explicit web login or logout.
         return;
       }
     } catch (_) {
       // A failed safety-marker read must not accidentally restore credentials.
+      if (!_isCurrent(siteId, revision)) return;
       accounts[siteId] = account(
         siteId,
       ).copyWith(storageMessage: '无法读取账号恢复设置，请重新导入凭据');
       return;
     }
+    if (!_isCurrent(siteId, revision)) return;
 
     String? secureCookie;
     bool readable = true;
@@ -95,11 +103,14 @@ class PlatformAccountManager extends GetxService {
       readable = false;
     }
     String? legacyCookie;
-    try {
-      legacyCookie = await readLegacyCredential?.call(siteId);
-    } catch (_) {
-      // Keep the original migration source intact for the next launch.
+    if (secureCookie == null) {
+      try {
+        legacyCookie = await readLegacyCredential?.call(siteId);
+      } catch (_) {
+        // Keep the original migration source intact for the next launch.
+      }
     }
+    if (!_isCurrent(siteId, revision)) return;
     final raw = secureCookie ?? legacyCookie;
     if (raw == null || raw.isEmpty) {
       if (!readable) {
@@ -110,7 +121,24 @@ class PlatformAccountManager extends GetxService {
       return;
     }
     try {
-      await importCookie(siteId, raw, verify: false);
+      if (secureCookie == null) {
+        // Only a legacy migration needs a secure write and readback.
+        await importCookie(siteId, raw, verify: false);
+      } else {
+        final cookie = PlatformCookie.parse(
+          raw,
+          allowBareTtwid: siteId == 'douyin',
+        );
+        if (cookie.isEmpty) throw const FormatException('Empty stored Cookie');
+        final session = _useCookie(
+          siteId,
+          cookie,
+          persistence: AccountPersistence.secure,
+        );
+        // A previous migration may have saved securely but failed to remove
+        // its legacy source. Retrying that removal needs no keychain rewrite.
+        await _serializeStore(siteId, () => _removeLegacy(siteId, session));
+      }
     } on FormatException {
       accounts[siteId] = account(
         siteId,
@@ -123,16 +151,29 @@ class PlatformAccountManager extends GetxService {
     String raw, {
     bool verify = true,
   }) async {
-    final previous = account(siteId);
     final parsed = PlatformCookie.parse(
       raw,
       allowBareTtwid: siteId == 'douyin',
     );
     if (parsed.isEmpty) throw const FormatException('请输入 Cookie');
-    final revision = previous.revision + 1;
+    final session = _useCookie(siteId, parsed);
+
+    await _persistSession(siteId, session);
+    if (verify && _isCurrent(siteId, session.version)) {
+      return this.verify(siteId);
+    }
+    return account(siteId);
+  }
+
+  LiveAccountSession _useCookie(
+    String siteId,
+    PlatformCookie cookie, {
+    AccountPersistence persistence = AccountPersistence.sessionOnly,
+  }) {
+    final revision = account(siteId).revision + 1;
     final session = LiveAccountSession(
       platform: _platformFor(siteId),
-      cookie: parsed,
+      cookie: cookie,
       version: revision,
     );
     _verificationAttempts[siteId] = (_verificationAttempts[siteId] ?? 0) + 1;
@@ -141,18 +182,16 @@ class PlatformAccountManager extends GetxService {
     accounts[siteId] = PlatformAccountState(
       siteId: siteId,
       status: LiveAccountStatus.configured,
-      persistence: AccountPersistence.sessionOnly,
+      persistence: persistence,
       message: '已配置，等待验证',
-      storageMessage: '正在保存到系统安全存储',
+      storageMessage: persistence == AccountPersistence.secure
+          ? null
+          : '正在保存到系统安全存储',
       revision: revision,
       hasCredential: true,
     );
 
-    await _persistSession(siteId, session);
-    if (verify && _isCurrent(siteId, revision)) {
-      return this.verify(siteId);
-    }
-    return account(siteId);
+    return session;
   }
 
   void _acceptResponseCookie(String siteId, LiveAccountSession session) {
@@ -200,15 +239,7 @@ class PlatformAccountManager extends GetxService {
           persistence: AccountPersistence.secure,
           clearStorageMessage: true,
         );
-        try {
-          await removeLegacyCredential?.call(siteId);
-        } catch (_) {
-          if (_isCurrentSession(siteId, session)) {
-            accounts[siteId] = account(
-              siteId,
-            ).copyWith(storageMessage: '安全存储已保存，旧数据清理将在下次启动重试');
-          }
-        }
+        await _removeLegacy(siteId, session);
       } catch (_) {
         if (_isCurrentSession(siteId, session)) {
           accounts[siteId] = account(siteId).copyWith(
@@ -218,6 +249,31 @@ class PlatformAccountManager extends GetxService {
         }
       }
     });
+  }
+
+  Future<void> _removeLegacy(String siteId, LiveAccountSession session) async {
+    if (!_isCurrentSession(siteId, session)) return;
+    try {
+      await removeLegacyCredential?.call(siteId);
+    } catch (_) {
+      if (_isCurrentSession(siteId, session)) {
+        accounts[siteId] = account(
+          siteId,
+        ).copyWith(storageMessage: '安全存储已保存，旧数据清理将在下次启动重试');
+      }
+    }
+  }
+
+  /// Retry a previous logout's cleanup only when the browser will be used.
+  /// Never let stale browser cookies silently undo a persisted logout.
+  Future<void> prepareWebLogin(String siteId) async {
+    final revision = account(siteId).revision;
+    final blocked = await readRestoreBlocked?.call(siteId) == true;
+    if (!blocked || !_isCurrent(siteId, revision)) return;
+    final state = await logout(siteId);
+    if (state.storageMessage != null) {
+      throw StateError('Previous account cleanup is incomplete');
+    }
   }
 
   Future<PlatformAccountState> verify(String siteId) async {
