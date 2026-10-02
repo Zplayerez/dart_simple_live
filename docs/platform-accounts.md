@@ -9,6 +9,8 @@ App 的“我的 → 账号管理”和 TV 的“设置 → 账号管理”提�
 - **设备配对**：接收设备选择对应平台的“从其他设备接收”，发送设备在同平台选择“发送到其他设备”。设备须在同一局域网；发送端可扫码或粘贴配对信息，接收端必须确认。二维码两分钟有效、一次性使用。二维码包含临时加密密钥，不包含账号 Cookie；不要把有效配对信息发给其他人。
 - **退出**：清理该平台本地凭据及可访问的网页登录 Cookie，不影响其他平台。遇到系统存储或浏览器清理失败会提示重试。Android 网页 Cookie 接口不能枚举从未访问过的任意路径，因此清理覆盖已知官方域名和本次登录访问路径；网页登录清理仍需实机验收。
 
+Windows 网页登录使用应用数据目录中的 `WebView2` 配置，登录页面、会话读取和退出清理共用此环境。程序安装在 `Program Files` 时无需管理员权限，也不会尝试在安装目录创建浏览器数据。组件启动和网页加载有独立进度及超时重试；网页实际加载完成后才启用“完成登录”。旧 B站网页登录路由也使用这一实现，扫码入口保留。
+
 ## 状态与能力边界
 
 | 状态 | 含义 |
@@ -45,5 +47,7 @@ HTTP 日志不记录请求或响应正文、Cookie 和 Authorization。核心日
 App 与 TV 提交依赖锁文件，CI 强制按锁定结果解析，避免构建时自动更新到不兼容的原生插件。Linux/macOS 产物使用保留执行权限的 tar.gz 打包。
 
 GitHub Actions `Platform accounts validation` 运行核心、共享包、App 和 TV 测试，并尝试 Windows/macOS/Linux release 构建、App/TV Android debug APK、iOS 无签名构建。构建产物用于开发验证，不代表已发布正式版本；Android debug APK 不能覆盖使用其他签名的正式安装包。iOS 无签名构建不可直接安装。
+
+Windows CI 还通过 `flutter drive` 运行原生 WebView2 冒烟测试：复用网页登录的环境初始化入口，等待原生视图创建后加载本地 HTML，检查加载回调、JavaScript、截图像素及关闭后重新打开。测试不使用真实账号或平台网络，报告与截图保存为 `accounts-windows-webview-smoke` 产物；缺少 WebView2 Runtime 时会失败，不会跳过。可在安装了 WebView2 Runtime 的 Windows 上进入 `simple_live_app`，运行 `flutter drive -d windows --driver=test_driver/windows_webview_smoke_driver.dart --target=integration_test/windows_webview_smoke_test.dart --dart-define=INTEGRATION_TEST_SHOULD_REPORT_RESULTS_TO_NATIVE=false`。
 
 实机验收仍包括：各端官方网页登录、安全存储重启恢复、单平台退出隔离、TV 遥控器确认、跨设备配对，四平台真实账号取流，以及斗鱼 Windows 原画长时间观看、切房间、前后台和断网恢复。编译通过不等于这些体验已经通过。

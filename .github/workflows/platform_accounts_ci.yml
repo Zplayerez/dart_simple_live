@@ -88,6 +88,18 @@ jobs:
         run: |
           flutter pub get --enforce-lockfile
           flutter build ${{ matrix.platform }} --release
+      - name: Windows native WebView smoke test
+        if: matrix.platform == 'windows'
+        timeout-minutes: 10
+        working-directory: simple_live_app
+        run: flutter drive -d windows --driver=test_driver/windows_webview_smoke_driver.dart --target=integration_test/windows_webview_smoke_test.dart --dart-define=INTEGRATION_TEST_SHOULD_REPORT_RESULTS_TO_NATIVE=false
+      - name: Windows WebView runtime evidence
+        if: always() && matrix.platform == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: accounts-windows-webview-smoke
+          path: simple_live_app/build/windows-webview-smoke
+          retention-days: 7
       - name: Preserve Unix executable permissions
         if: matrix.platform != 'windows'
         run: tar -czf accounts-${{ matrix.platform }}.tar.gz -C "${{ matrix.bundle }}" .

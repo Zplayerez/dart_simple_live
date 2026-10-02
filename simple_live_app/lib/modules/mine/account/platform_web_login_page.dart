@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -6,27 +7,48 @@ import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:get/get.dart';
 import 'package:simple_live_account/simple_live_account.dart';
 import 'package:simple_live_account/widgets/account_labels.dart';
-import 'package:simple_live_app/modules/mine/account/platform_web_login_policy.dart';
 import 'package:simple_live_app/modules/mine/account/platform_web_cookie_cleanup.dart';
+import 'package:simple_live_app/modules/mine/account/platform_web_login_environment.dart';
+import 'package:simple_live_app/modules/mine/account/platform_web_login_policy.dart';
+
+enum _LoginPhase { preparing, creating, loading, ready, failed }
 
 /// Login is completed by the user on the official site. No password entry,
 /// captcha solving or Cookie JavaScript is implemented by this application.
 class PlatformWebLoginPage extends StatefulWidget {
   final String siteId;
 
-  const PlatformWebLoginPage({required this.siteId, super.key});
+  /// Allows widget tests to exercise native lifecycle failures without a runtime.
+  @visibleForTesting
+  final Future<WebViewEnvironment?> Function()? prepareEnvironment;
+
+  const PlatformWebLoginPage({
+    required this.siteId,
+    this.prepareEnvironment,
+    super.key,
+  });
 
   @override
   State<PlatformWebLoginPage> createState() => _PlatformWebLoginPageState();
 }
 
 class _PlatformWebLoginPageState extends State<PlatformWebLoginPage> {
-  InAppWebViewController? _webView;
+  WebViewEnvironment? _environment;
+  Widget? _view;
   Uri? _currentUri;
   bool _busy = false;
-  bool _blockedNavigation = false;
-  bool _ready = false;
-  bool _initializing = true;
+  _LoginPhase _phase = _LoginPhase.preparing;
+  String? _error;
+  Timer? _deadline;
+  int _generation = 0;
+
+  bool get _loading =>
+      _phase == _LoginPhase.preparing ||
+      _phase == _LoginPhase.creating ||
+      _phase == _LoginPhase.loading;
+
+  bool _active(int generation) =>
+      mounted && generation == _generation && _phase != _LoginPhase.failed;
 
   @override
   void initState() {
@@ -37,55 +59,96 @@ class _PlatformWebLoginPageState extends State<PlatformWebLoginPage> {
     _prepare();
   }
 
-  Future<void> _prepare() async {
-    var ready = platformWebLoginSupported;
-    String? error;
-    if (!ready) {
-      error = '当前系统暂不支持应用内网页登录，请使用 Cookie 导入。';
-    } else if (Platform.isWindows) {
-      try {
-        final version = await WebViewEnvironment.getAvailableVersion();
-        ready = version != null && version.isNotEmpty;
-      } catch (_) {
-        ready = false;
-      }
-      if (!ready) {
-        error = '网页登录组件不可用，请安装 Microsoft Edge WebView2 Runtime，或使用 Cookie 导入。';
-      }
-    }
-    if (!mounted) return;
+  @override
+  void dispose() {
+    _deadline?.cancel();
+    super.dispose();
+  }
+
+  void _fail(int generation, String message) {
+    if (!_active(generation)) return;
+    _deadline?.cancel();
     setState(() {
-      _ready = ready;
-      _initializing = false;
-      _error = error;
+      _phase = _LoginPhase.failed;
+      _error = message;
     });
   }
 
-  String? _error;
+  void _startDeadline(int generation, String message) {
+    _deadline?.cancel();
+    _deadline =
+        Timer(const Duration(seconds: 30), () => _fail(generation, message));
+  }
 
-  Future<void> _recordLocation(
-      InAppWebViewController controller, Uri? uri) async {
-    if (!mounted) return;
-    final official = isOfficialAccountPage(widget.siteId, uri);
+  Future<void> _prepare() async {
+    final generation = ++_generation;
+    _deadline?.cancel();
     setState(() {
-      _currentUri = uri;
-      _blockedNavigation = uri != null && !official;
-      if (_blockedNavigation) _error = '已阻止离开平台官方网站，请返回官网或使用 Cookie 导入。';
+      _phase = _LoginPhase.preparing;
+      _environment = null;
+      _view = null;
+      _currentUri = null;
+      _error = null;
     });
+    try {
+      if (widget.prepareEnvironment == null && !platformWebLoginSupported) {
+        _fail(generation, '当前系统暂不支持应用内网页登录，请使用 Cookie 导入。');
+        return;
+      }
+      final environment = await (widget.prepareEnvironment ??
+          preparePlatformWebLoginEnvironment)();
+      if (!_active(generation)) return;
+      setState(() {
+        _environment = environment;
+        _view = _buildWebView(generation);
+        _phase = _LoginPhase.creating;
+      });
+      // Native view creation errors do not reach onReceivedError on Windows.
+      _startDeadline(generation, '网页登录组件启动超时，请重试；若仍无法打开，请使用 Cookie 导入。');
+    } on PlatformWebLoginEnvironmentException catch (error) {
+      _fail(generation, error.message);
+    } catch (_) {
+      _fail(generation, '无法启动网页登录组件，请重试或使用 Cookie 导入。');
+    }
+  }
+
+  Future<void> _created(
+      int generation, InAppWebViewController controller) async {
+    if (!_active(generation)) return;
+    setState(() => _phase = _LoginPhase.loading);
+    _startDeadline(generation, '官方页面加载超时，请检查网络后重试，或使用 Cookie 导入。');
+    try {
+      // Wait for the native controller and event channel before navigating.
+      await controller.loadUrl(
+          urlRequest: URLRequest(
+        url: WebUri(officialLoginUrls[widget.siteId]!),
+      ));
+    } catch (_) {
+      _fail(generation, '无法打开平台官方网站，请重试或使用 Cookie 导入。');
+    }
+  }
+
+  bool _recordLocation(int generation, Uri? uri) {
+    if (!_active(generation)) return false;
+    // A newly created Windows view may report its initial blank document.
+    if (uri == null || uri.toString() == 'about:blank') return false;
+    if (!isOfficialAccountPage(widget.siteId, uri)) {
+      _fail(generation, '已阻止离开平台官方网站，请重试或使用 Cookie 导入。');
+      return false;
+    }
+    setState(() => _currentUri = uri);
     recordPlatformWebCookieScope(widget.siteId, uri);
-    if (_blockedNavigation) await controller.stopLoading();
+    return true;
   }
 
   Future<void> _complete() async {
-    if (_busy || !_ready) return;
-    if (!isOfficialAccountPage(widget.siteId, _currentUri)) {
-      SmartDialog.showToast('请在平台官方页面完成登录后再点击完成登录');
-      return;
-    }
+    if (_busy || _phase != _LoginPhase.ready) return;
+    if (!isOfficialAccountPage(widget.siteId, _currentUri)) return;
     setState(() => _busy = true);
     try {
       final root = officialCookieRoots[widget.siteId]!;
-      final cookieManager = CookieManager.instance();
+      final cookieManager =
+          CookieManager.instance(webViewEnvironment: _environment);
       final cookies = <OfficialWebCookie>[];
       // Never collect another platform's jar or enumerate all browser cookies.
       for (final host in [root, 'www.$root']) {
@@ -107,7 +170,6 @@ class _PlatformWebLoginPageState extends State<PlatformWebLoginPage> {
           .importCookie(widget.siteId, header);
       if (!mounted) return;
       SmartDialog.showToast(accountResultMessage(state));
-      // The account page shows configured/unavailable separately from verified.
       Get.back();
     } catch (_) {
       if (mounted) {
@@ -118,94 +180,104 @@ class _PlatformWebLoginPageState extends State<PlatformWebLoginPage> {
     }
   }
 
+  Widget _buildWebView(int generation) => InAppWebView(
+        key: ValueKey(generation),
+        webViewEnvironment: _environment,
+        initialSettings: InAppWebViewSettings(
+          useShouldOverrideUrlLoading: true,
+          userAgent: widget.siteId == 'bilibili' &&
+                  (Platform.isAndroid || Platform.isIOS)
+              ? 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
+              : null,
+        ),
+        onWebViewCreated: (controller) => _created(generation, controller),
+        onLoadStart: (_, uri) {
+          if (!_recordLocation(generation, uri)) return;
+          // A redirect must not repeatedly extend the loading deadline.
+          if (_phase == _LoginPhase.ready) {
+            _startDeadline(generation, '官方页面加载超时，请检查网络后重试。');
+          }
+          setState(() => _phase = _LoginPhase.loading);
+        },
+        onUpdateVisitedHistory: (_, uri, __) =>
+            _recordLocation(generation, uri),
+        onLoadStop: (_, uri) {
+          if (!_recordLocation(generation, uri)) return;
+          _deadline?.cancel();
+          setState(() {
+            _phase = _LoginPhase.ready;
+            _error = null;
+          });
+        },
+        onReceivedError: (_, request, error) {
+          // WebView2 reports our rejected offsite navigations as CANCELLED.
+          // These must not tear down an already loaded official page.
+          if (request.isForMainFrame == false ||
+              error.type == WebResourceErrorType.CANCELLED) {
+            return;
+          }
+          _fail(generation, '官方页面加载失败，请检查网络后重试，或使用 Cookie 导入。');
+        },
+        onReceivedHttpError: (_, request, response) {
+          if (request.isForMainFrame == false ||
+              (response.statusCode ?? 0) < 400) {
+            return;
+          }
+          _fail(generation, '官方网站暂时无法打开，请稍后重试，或使用 Cookie 导入。');
+        },
+        shouldOverrideUrlLoading: (_, navigation) async {
+          if (!_active(generation)) return NavigationActionPolicy.CANCEL;
+          final allowed = isAllowedAccountNavigation(
+              widget.siteId, navigation.request.url,
+              isMainFrame: navigation.isForMainFrame);
+          if (!allowed && navigation.isForMainFrame) {
+            // Keep the existing official page usable when an external link is blocked.
+            setState(() => _error = '已阻止离开平台官方网站；第三方登录请使用 Cookie 导入。');
+          }
+          return allowed
+              ? NavigationActionPolicy.ALLOW
+              : NavigationActionPolicy.CANCEL;
+        },
+      );
+
   @override
   Widget build(BuildContext context) {
+    final status = switch (_phase) {
+      _LoginPhase.preparing => '正在准备网页登录组件',
+      _LoginPhase.creating => '正在启动网页登录组件',
+      _LoginPhase.loading => '正在加载平台官方网站',
+      _LoginPhase.ready => '在官网完成登录及验证码，再点击“完成登录”。账号状态将单独验证。',
+      _LoginPhase.failed => '网页登录未能打开',
+    };
     return Scaffold(
       appBar: AppBar(
         title: Text('${accountPlatformName(widget.siteId)}网页登录'),
         actions: [
           TextButton(
-            onPressed: _busy || !_ready ? null : _complete,
+            onPressed: _busy || _phase != _LoginPhase.ready ? null : _complete,
             child: const Text('完成登录'),
-          ),
+          )
         ],
       ),
-      body: Column(
-        children: [
+      body: Column(children: [
+        if (_currentUri != null)
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-            child: Text(_currentUri?.host.isNotEmpty == true
-                ? '当前网站：${_currentUri!.host}'
-                : '正在打开平台官方网站'),
+            child: Text('当前网站：${_currentUri!.host}'),
           ),
-          Padding(
-            padding: const EdgeInsets.all(12),
-            child: Text(_error ?? '在官网完成登录及验证码，再点击“完成登录”。账号状态将单独验证。'),
+        Padding(
+            padding: const EdgeInsets.all(12), child: Text(_error ?? status)),
+        if (_busy || _loading) const LinearProgressIndicator(),
+        if (_phase == _LoginPhase.creating ||
+            _phase == _LoginPhase.loading ||
+            _phase == _LoginPhase.ready)
+          Expanded(child: _view!),
+        if (_error != null)
+          TextButton(
+            onPressed: _busy ? null : _prepare,
+            child: const Text('重试打开官网'),
           ),
-          if (_busy) const LinearProgressIndicator(),
-          if (_initializing) const LinearProgressIndicator(),
-          if (_ready)
-            Expanded(
-              child: Stack(children: [
-                InAppWebView(
-                  initialUrlRequest: URLRequest(
-                      url: WebUri(officialLoginUrls[widget.siteId]!)),
-                  initialSettings: InAppWebViewSettings(
-                    useShouldOverrideUrlLoading: true,
-                    // Desktop official pages keep their native login layout.
-                    userAgent: widget.siteId == 'bilibili' &&
-                            (Platform.isAndroid || Platform.isIOS)
-                        ? 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
-                        : null,
-                  ),
-                  onWebViewCreated: (controller) {
-                    if (mounted) _webView = controller;
-                  },
-                  onLoadStart: _recordLocation,
-                  onUpdateVisitedHistory: (controller, uri, _) =>
-                      _recordLocation(controller, uri),
-                  onLoadStop: _recordLocation,
-                  onReceivedError: (_, request, error) {
-                    if (!mounted || request.isForMainFrame == false) return;
-                    setState(() => _error = '官方页面加载失败，请检查网络后重试，或使用 Cookie 导入。');
-                  },
-                  shouldOverrideUrlLoading: (_, navigation) async {
-                    final allowed = isAllowedAccountNavigation(
-                        widget.siteId, navigation.request.url,
-                        isMainFrame: navigation.isForMainFrame);
-                    if (!allowed && navigation.isForMainFrame && mounted) {
-                      setState(
-                          () => _error = '已阻止离开平台官方网站；第三方登录请使用 Cookie 导入。');
-                    }
-                    return allowed
-                        ? NavigationActionPolicy.ALLOW
-                        : NavigationActionPolicy.CANCEL;
-                  },
-                ),
-                if (_blockedNavigation)
-                  Positioned.fill(
-                      child: ColoredBox(
-                    color: Theme.of(context).scaffoldBackgroundColor,
-                    child: const Center(child: Text('已阻止显示非官方网站')),
-                  )),
-              ]),
-            ),
-          if (_error != null && _ready)
-            TextButton(
-              onPressed: () {
-                setState(() {
-                  _error = null;
-                  _blockedNavigation = false;
-                  _currentUri = null;
-                });
-                _webView?.loadUrl(
-                    urlRequest: URLRequest(
-                        url: WebUri(officialLoginUrls[widget.siteId]!)));
-              },
-              child: const Text('重试打开官网'),
-            ),
-        ],
-      ),
+      ]),
     );
   }
 }

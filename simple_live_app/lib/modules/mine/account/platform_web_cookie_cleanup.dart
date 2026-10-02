@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io' show Platform;
 
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+import 'package:simple_live_app/modules/mine/account/platform_web_login_environment.dart';
 import 'package:simple_live_app/modules/mine/account/platform_web_login_policy.dart';
 
 const _officialHosts = {
@@ -94,8 +95,10 @@ Future<void> clearNativePlatformWebCookies(String siteId) async {
 }
 
 Future<void> _clearWindowsCookies(String siteId) async {
+  final environment = await preparePlatformWebLoginEnvironment();
   final created = Completer<InAppWebViewController>();
   final view = HeadlessInAppWebView(
+    webViewEnvironment: environment,
     initialUrlRequest: URLRequest(url: WebUri('about:blank')),
     initialSettings: InAppWebViewSettings(javaScriptEnabled: false),
     onWebViewCreated: (controller) {
