@@ -98,7 +98,7 @@ void testSite(LiveSite site) async {
         detail: roomDetail!, quality: playQualities.first);
     expect(url, isNotNull);
     expect(url.urls, isNotEmpty);
-    print(url.urls.join('\n\n'));
+    print(url);
   });
 
   test('getDanmaku', () async {

@@ -1,3 +1,4 @@
+import 'package:simple_live_core/simple_live_core.dart';
 import 'dart:io';
 
 import 'package:device_info_plus/device_info_plus.dart';
@@ -21,6 +22,7 @@ class Log {
   }
 
   static void writeLog(content, [Level level = Level.info]) {
+    content = LogRedactor.redact(content.toString());
     logFileWriter
         ?.write("[${level.name.toUpperCase()}] $_currentTime：$content");
   }
@@ -28,6 +30,7 @@ class Log {
   static RxList<DebugLogModel> debugLogs = <DebugLogModel>[].obs;
 
   static void addDebugLog(String content, Color? color) {
+    content = LogRedactor.redact(content);
     if (kReleaseMode) {
       return;
     }
@@ -55,6 +58,7 @@ class Log {
   );
 
   static void d(String message, [bool writeFile = true]) {
+    message = LogRedactor.redact(message);
     addDebugLog(message, Colors.orange);
     logger.d("${DateTime.now().toString()}\n$message");
     if (writeFile) {
@@ -63,6 +67,7 @@ class Log {
   }
 
   static void i(String message, [bool writeFile = true]) {
+    message = LogRedactor.redact(message);
     addDebugLog(message, Colors.blue);
     logger.i("${DateTime.now().toString()}\n$message");
     if (writeFile) {
@@ -73,6 +78,9 @@ class Log {
 
   static void e(String message, StackTrace stackTrace,
       [bool writeFile = true]) {
+    message = LogRedactor.redact(message);
+    stackTrace =
+        StackTrace.fromString(LogRedactor.redact(stackTrace.toString()));
     addDebugLog('$message\r\n\r\n$stackTrace', Colors.red);
     logger.e("${DateTime.now().toString()}\n$message", stackTrace: stackTrace);
     if (writeFile) {
@@ -81,6 +89,7 @@ class Log {
   }
 
   static void w(String message, [bool writeFile = true]) {
+    message = LogRedactor.redact(message);
     addDebugLog(message, Colors.pink);
     logger.w("${DateTime.now().toString()}\n$message");
     if (writeFile) {
@@ -89,6 +98,7 @@ class Log {
   }
 
   static void logPrint(dynamic obj, [bool writeFile = true]) {
+    obj = LogRedactor.redact(obj.toString());
     addDebugLog(obj.toString(), Colors.red);
     if (writeFile) {
       writeLog(obj, Level.info);
@@ -122,7 +132,7 @@ class LogFileWriter {
   }
 
   void write(String content) {
-    fileWriter?.write(content);
+    fileWriter?.write(LogRedactor.redact(content));
     fileWriter?.write("\r\n");
   }
 

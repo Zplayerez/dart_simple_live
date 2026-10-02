@@ -10,7 +10,6 @@ import 'package:simple_live_tv_app/app/event_bus.dart';
 import 'package:simple_live_tv_app/app/log.dart';
 import 'package:simple_live_tv_app/models/db/follow_user.dart';
 import 'package:simple_live_tv_app/models/db/history.dart';
-import 'package:simple_live_tv_app/services/bilibili_account_service.dart';
 import 'package:simple_live_tv_app/services/db_service.dart';
 import 'package:simple_live_tv_app/services/signalr_service.dart';
 
@@ -160,17 +159,8 @@ class SyncController extends BaseController {
     }
   }
 
-  void onReceiveBiliAccount(bool overlay, String data) async {
-    try {
-      var jsonBody = json.decode(data);
-      var cookie = jsonBody['cookie'];
-      BiliBiliAccountService.instance.setCookie(cookie);
-      BiliBiliAccountService.instance.loadUserInfo();
-      SmartDialog.showToast('已同步哔哩哔哩账号');
-    } catch (e) {
-      SmartDialog.showToast("同步失败:$e");
-      Log.logPrint(e);
-    }
+  void onReceiveBiliAccount(bool overlay, String data) {
+    SmartDialog.showToast('请在账号管理中使用加密配对接收账号');
   }
 
   @override

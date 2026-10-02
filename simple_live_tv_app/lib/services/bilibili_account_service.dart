@@ -1,76 +1,53 @@
-import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:get/get.dart';
-import 'package:simple_live_core/simple_live_core.dart';
-import 'package:simple_live_tv_app/app/constant.dart';
-import 'package:simple_live_tv_app/app/sites.dart';
-import 'package:simple_live_tv_app/models/account/bilibili_user_info_page.dart';
-import 'package:simple_live_tv_app/requests/http_client.dart';
-import 'package:simple_live_tv_app/services/local_storage_service.dart';
+import 'package:simple_live_account/simple_live_account.dart';
 
+/// Compatibility facade for existing Bilibili QR and navigation consumers.
+/// The shared manager owns all credentials, persistence and validation.
 class BiliBiliAccountService extends GetxService {
-  static BiliBiliAccountService get instance =>
-      Get.find<BiliBiliAccountService>();
+  static BiliBiliAccountService get instance => Get.find();
 
-  var logined = false.obs;
+  final logined = false.obs;
+  final name = '未登录'.obs;
+  Worker? _worker;
+  Future<PlatformAccountState>? _pendingImport;
 
-  var cookie = "";
-  var uid = 0;
-  var name = "未登录".obs;
+  PlatformAccountManager get _manager => PlatformAccountManager.instance;
+  String get cookie => _manager.credentialFor('bilibili');
+  int get uid => int.tryParse(_manager.account('bilibili').userId ?? '') ?? 0;
 
   @override
   void onInit() {
-    cookie = LocalStorageService.instance
-        .getValue(LocalStorageService.kBilibiliCookie, "");
-    logined.value = cookie.isNotEmpty;
-    loadUserInfo();
     super.onInit();
+    _refresh();
+    _worker = ever(_manager.accounts, (_) => _refresh());
   }
 
-  Future loadUserInfo() async {
-    if (cookie.isEmpty) {
-      return;
-    }
-    try {
-      var result = await HttpClient.instance.getJson(
-        "https://api.bilibili.com/x/member/web/account",
-        header: {
-          "Cookie": cookie,
-        },
-      );
-      if (result["code"] == 0) {
-        var info = BiliBiliUserInfoModel.fromJson(result["data"]);
-        name.value = info.uname ?? "未登录";
-        uid = info.mid ?? 0;
-        setSite();
-      } else {
-        SmartDialog.showToast("哔哩哔哩登录已失效，请重新登录");
-        logout();
-      }
-    } catch (e) {
-      SmartDialog.showToast("获取哔哩哔哩用户信息失败，可前往账号管理重试");
-    }
+  void _refresh() {
+    final state = _manager.account('bilibili');
+    // A transient verification outage does not sign a previously verified user out.
+    logined.value =
+        state.hasCredential &&
+        state.userId != null &&
+        state.status != LiveAccountStatus.expired;
+    name.value = state.displayName ?? state.message;
   }
 
-  void setSite() {
-    var site = (Sites.allSites[Constant.kBiliBili]!.liveSite as BiliBiliSite);
-    site.userId = uid;
-    site.cookie = cookie;
+  Future<PlatformAccountState> setCookie(String cookie) {
+    final operation = _manager.importCookie('bilibili', cookie, verify: false);
+    _pendingImport = operation;
+    return operation;
   }
 
-  void setCookie(String cookie) {
-    this.cookie = cookie;
-    LocalStorageService.instance
-        .setValue(LocalStorageService.kBilibiliCookie, cookie);
-    logined.value = cookie.isNotEmpty;
+  Future<PlatformAccountState> loadUserInfo() async {
+    await _pendingImport;
+    return _manager.verify('bilibili');
   }
 
-  void logout() async {
-    cookie = "";
-    uid = 0;
-    name.value = "未登录";
-    setSite();
-    LocalStorageService.instance
-        .setValue(LocalStorageService.kBilibiliCookie, "");
-    logined.value = false;
+  Future<PlatformAccountState> logout() => _manager.logout('bilibili');
+
+  @override
+  void onClose() {
+    _worker?.dispose();
+    super.onClose();
   }
 }

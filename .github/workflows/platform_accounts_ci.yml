@@ -1,0 +1,131 @@
+name: Platform accounts validation
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/platform-accounts]
+  pull_request:
+    paths:
+      - 'simple_live_core/**'
+      - 'simple_live_account/**'
+      - 'simple_live_app/**'
+      - 'simple_live_tv_app/**'
+      - '.github/workflows/platform_accounts_ci.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: platform-accounts-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.38.10'
+          cache: true
+      - run: sudo apt-get update && sudo apt-get install -y clang
+      - name: Core unit tests
+        working-directory: simple_live_core
+        run: |
+          dart pub get
+          dart analyze
+          dart test test/platform_account_test.dart test/account_session_regression_test.dart test/playback_refresh_policy_test.dart test/sensitive_log_regression_test.dart test/http_response_cookie_regression_test.dart test/playback_command_queue_test.dart test/playback_quality_label_test.dart
+      - name: Shared account tests
+        working-directory: simple_live_account
+        run: |
+          flutter pub get
+          flutter analyze --no-fatal-infos
+          flutter test
+      - name: Main app checks
+        working-directory: simple_live_app
+        run: |
+          flutter pub get
+          flutter analyze --no-fatal-infos
+          flutter test
+      - name: TV app checks
+        working-directory: simple_live_tv_app
+        run: |
+          flutter pub get
+          flutter analyze --no-fatal-infos
+          flutter test
+
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux
+            bundle: simple_live_app/build/linux/x64/release/bundle
+          - os: windows-2022
+            platform: windows
+            bundle: simple_live_app/build/windows/x64/runner/Release
+          - os: macos-14
+            platform: macos
+            bundle: simple_live_app/build/macos/Build/Products/Release
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.38.10'
+          cache: true
+      - name: Linux native dependencies
+        if: matrix.platform == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev libsecret-1-dev liblzma-dev libasound2-dev libmpv-dev
+      - name: Build desktop
+        working-directory: simple_live_app
+        run: |
+          flutter pub get
+          flutter build ${{ matrix.platform }} --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: accounts-${{ matrix.platform }}
+          path: ${{ matrix.bundle }}
+          retention-days: 7
+
+  android:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [simple_live_app, simple_live_tv_app]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.38.10'
+          cache: true
+      - name: Build debug APK without release signing keys
+        working-directory: ${{ matrix.app }}
+        run: |
+          flutter pub get
+          flutter build apk --debug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: accounts-${{ matrix.app }}-debug-apk
+          path: ${{ matrix.app }}/build/app/outputs/flutter-apk/app-debug.apk
+          retention-days: 7
+
+  ios:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.38.10'
+          cache: true
+      - name: Build iOS without distribution signing
+        working-directory: simple_live_app
+        run: |
+          flutter pub get
+          flutter build ios --release --no-codesign

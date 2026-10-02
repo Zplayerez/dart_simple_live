@@ -1,47 +1,35 @@
 import 'package:dio/dio.dart';
+import 'package:simple_live_core/simple_live_core.dart';
 import 'package:simple_live_tv_app/app/log.dart';
 
+/// Account responses can contain credentials even outside named Cookie fields.
+/// Diagnostics retain request timing/status without bodies or authentication data.
 class CustomLogInterceptor extends Interceptor {
   @override
   void onRequest(RequestOptions options, RequestInterceptorHandler handler) {
-    options.extra["ts"] = DateTime.now().millisecondsSinceEpoch;
-
+    options.extra['ts'] = DateTime.now().millisecondsSinceEpoch;
     super.onRequest(options, handler);
   }
 
+  int _elapsed(RequestOptions options) =>
+      DateTime.now().millisecondsSinceEpoch -
+      (options.extra['ts'] as int? ?? DateTime.now().millisecondsSinceEpoch);
+
   @override
   void onError(DioException err, ErrorInterceptorHandler handler) {
-    var time =
-        DateTime.now().millisecondsSinceEpoch - err.requestOptions.extra["ts"];
-    Log.e('''【HTTP请求错误-${err.type}】 耗时:${time}ms
-${err.message}
-
-Request Method：${err.requestOptions.method}
-Response Code：${err.response?.statusCode}
-Request URL：${err.requestOptions.uri}
-Request Query：${err.requestOptions.queryParameters}
-Request Data：${err.requestOptions.data}
-Request Headers：${err.requestOptions.headers}
-Response Headers：${err.response?.headers.map}
-Response Data：${err.response?.data}''', err.stackTrace);
+    Log.e(
+        '[HTTP Error] ${err.type} [${err.response?.statusCode}] '
+        '[${_elapsed(err.requestOptions)}ms] ${err.requestOptions.method} '
+        '${LogRedactor.redactUri(err.requestOptions.uri)}',
+        err.stackTrace);
     super.onError(err, handler);
   }
 
   @override
   void onResponse(Response response, ResponseInterceptorHandler handler) {
-    var time = DateTime.now().millisecondsSinceEpoch -
-        response.requestOptions.extra["ts"];
-    Log.i(
-      '''【HTTP请求响应】 耗时:${time}ms
-Request Method：${response.requestOptions.method}
-Request Code：${response.statusCode}
-Request URL：${response.requestOptions.uri}
-Request Query：${response.requestOptions.queryParameters}
-Request Data：${response.requestOptions.data}
-Request Headers：${response.requestOptions.headers}
-Response Headers：${response.headers.map}
-Response Data：${response.data}''',
-    );
+    Log.i('[HTTP Response] [${response.statusCode}] '
+        '[${_elapsed(response.requestOptions)}ms] ${response.requestOptions.method} '
+        '${LogRedactor.redactUri(response.requestOptions.uri)}');
     super.onResponse(response, handler);
   }
 }

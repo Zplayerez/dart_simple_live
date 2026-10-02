@@ -1,3 +1,4 @@
+import 'sensitive_log.dart';
 import 'package:logger/logger.dart';
 
 enum RequestLogType {
@@ -32,6 +33,7 @@ class CoreLog {
   );
 
   static void d(String message) {
+    message = LogRedactor.redact(message);
     if (!enableLog) {
       return;
     }
@@ -42,6 +44,7 @@ class CoreLog {
   }
 
   static void i(String message) {
+    message = LogRedactor.redact(message);
     if (!enableLog) {
       return;
     }
@@ -52,13 +55,16 @@ class CoreLog {
   }
 
   static void e(String message, StackTrace stackTrace) {
+    message = LogRedactor.redact(message);
     if (!enableLog) {
       return;
     }
     onPrintLog?.call(Level.error, message);
     if (onPrintLog == null) {
-      logger.e("${DateTime.now().toString()}\n$message",
-          stackTrace: stackTrace);
+      logger.e(
+        "${DateTime.now().toString()}\n$message",
+        stackTrace: stackTrace,
+      );
     }
   }
 
@@ -66,17 +72,18 @@ class CoreLog {
     if (!enableLog) {
       return;
     }
-    onPrintLog?.call(Level.error, e.toString());
+    onPrintLog?.call(Level.error, LogRedactor.redact(e.toString()));
     if (onPrintLog == null) {
       logger.e(
-        "${DateTime.now().toString()}\n${e.toString()}",
-        error: e,
+        "${DateTime.now().toString()}\n${LogRedactor.redact(e.toString())}",
+        error: LogRedactor.redact(e.toString()),
         stackTrace: (e is Error) ? e.stackTrace : StackTrace.current,
       );
     }
   }
 
   static void w(String message) {
+    message = LogRedactor.redact(message);
     if (!enableLog) {
       return;
     }

@@ -11,6 +11,8 @@ dependencies:
     sdk: flutter
   simple_live_core:
     path: ../simple_live_core
+  simple_live_account:
+    path: ../simple_live_account
   cupertino_icons: ^1.0.2
   remixicon: ^1.0.0 #Remix图标
 
