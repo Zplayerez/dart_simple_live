@@ -146,24 +146,24 @@ class _PlatformWebLoginPageState extends State<PlatformWebLoginPage> {
     if (!isOfficialAccountPage(widget.siteId, _currentUri)) return;
     setState(() => _busy = true);
     try {
-      final root = officialCookieRoots[widget.siteId]!;
       final cookieManager =
           CookieManager.instance(webViewEnvironment: _environment);
-      final cookies = <OfficialWebCookie>[];
-      // Never collect another platform's jar or enumerate all browser cookies.
-      for (final host in [root, 'www.$root']) {
-        final values =
-            await cookieManager.getCookies(url: WebUri('https://$host/'));
-        if (!mounted) return;
-        cookies.addAll(values.map((cookie) => OfficialWebCookie(
-              name: cookie.name,
-              value: cookie.value,
-              domain: cookie.domain,
-            )));
-      }
-      final header = officialAccountCookieHeader(widget.siteId, cookies);
+      final header = await collectOfficialAccountCookieHeader(
+        widget.siteId,
+        readCookies: (uri) async {
+          final values = await cookieManager.getCookies(url: WebUri.uri(uri));
+          return values
+              .map((cookie) => OfficialWebCookie(
+                    name: cookie.name,
+                    value: cookie.value,
+                    domain: cookie.domain,
+                  ))
+              .toList();
+        },
+      );
+      if (!mounted) return;
       if (header == null) {
-        SmartDialog.showToast('尚未获取到账号会话，请先在官网点击登录并完成验证');
+        SmartDialog.showToast('尚未读取到可导入的账号凭据。若官网已登录，请返回平台首页后重试，或使用 Cookie 导入。');
         return;
       }
       final state = await PlatformAccountManager.instance

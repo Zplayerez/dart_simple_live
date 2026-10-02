@@ -57,6 +57,13 @@ class PlatformCookie {
 
   /// Credential presence is only a candidate, never proof of login.
   bool hasAccountSessionFor(LiveAccountPlatform platform) {
+    // Huya's current Web SDK restores login when either part of this pair is
+    // missing. A user ID or the separate restore cookie alone is insufficient.
+    if (platform == LiveAccountPlatform.huya &&
+        (values['udb_uid']?.isNotEmpty ?? false) &&
+        (values['udb_biztoken']?.isNotEmpty ?? false)) {
+      return true;
+    }
     final candidates = switch (platform) {
       LiveAccountPlatform.bilibili => const ['SESSDATA'],
       LiveAccountPlatform.douyu => const ['acf_auth'],

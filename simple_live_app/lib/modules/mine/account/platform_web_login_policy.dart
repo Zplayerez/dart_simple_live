@@ -53,6 +53,26 @@ class OfficialWebCookie {
   final String? domain;
 }
 
+/// Read only the existing platform root/www scopes. In particular, credentials
+/// from a visited account subdomain are not widened into a shared Cookie header.
+Future<String?> collectOfficialAccountCookieHeader(
+  String siteId, {
+  required Future<List<OfficialWebCookie>> Function(Uri uri) readCookies,
+}) async {
+  final root = officialCookieRoots[siteId];
+  if (root == null) throw ArgumentError('Unsupported account platform');
+  final cookies = <OfficialWebCookie>[];
+  try {
+    for (final host in [root, 'www.$root']) {
+      cookies.addAll(
+          await readCookies(Uri(scheme: 'https', host: host, path: '/')));
+    }
+    return officialAccountCookieHeader(siteId, cookies);
+  } catch (_) {
+    throw StateError('无法读取平台网页登录凭据');
+  }
+}
+
 /// Called only for CookieManager results read from this platform's HTTPS origin.
 /// A missing native domain is allowed because Android's Cookie API omits it.
 String? officialAccountCookieHeader(

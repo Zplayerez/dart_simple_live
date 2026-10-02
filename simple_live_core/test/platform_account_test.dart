@@ -108,6 +108,38 @@ void main() {
       }
     });
 
+    test('Huya accepts legacy token or the complete modern token pair', () {
+      for (final header in [
+        'udb_l=synthetic-legacy',
+        'udb_uid=synthetic-user; udb_biztoken=synthetic-token',
+      ]) {
+        final cookie = PlatformCookie.parse(header);
+        expect(cookie.hasAccountSessionFor(LiveAccountPlatform.huya), isTrue);
+        expect(cookie.hasAccountSession, isTrue);
+        expect(cookie.hasAccountSessionFor(LiveAccountPlatform.douyu), isFalse);
+      }
+    });
+
+    test('Huya identity, restore and incomplete cookies are not sessions', () {
+      for (final header in [
+        '',
+        'udb_l=',
+        'udb_uid=synthetic-user',
+        'udb_biztoken=synthetic-token',
+        'udb_uid=; udb_biztoken=synthetic-token',
+        'udb_uid=synthetic-user; udb_biztoken=   ',
+        'yyuid=12345',
+        'udb_cred=synthetic-restore',
+        'udb_uid=synthetic-user; udb_cred=synthetic-restore',
+        'udb_anouid=synthetic-guest; udb_anobiztoken=synthetic-guest-token',
+        'yyuid=12345; udb_status=1; udb_passdata=3; udb_login=1',
+      ]) {
+        final cookie = PlatformCookie.parse(header);
+        expect(cookie.hasAccountSessionFor(LiveAccountPlatform.huya), isFalse);
+        expect(cookie.hasAccountSession, isFalse);
+      }
+    });
+
     test('only explicit HTTPS account hosts receive platform Cookie', () {
       final account = session(LiveAccountPlatform.douyu, 'acf_auth=synthetic');
       expect(
@@ -150,6 +182,32 @@ void main() {
   });
 
   group('validation states', () {
+    test(
+      'Huya tokens remain configured without claiming verified identity',
+      () async {
+        final dio = mockDio(
+          (_) => throw StateError('No Huya identity request expected'),
+        );
+        try {
+          for (final header in [
+            'udb_l=synthetic-legacy',
+            'udb_uid=synthetic-user; udb_biztoken=synthetic-token',
+          ]) {
+            final result = await PlatformAccountValidator.validate(
+              session(LiveAccountPlatform.huya, header),
+              dio: dio,
+            );
+            expect(result.status, LiveAccountStatus.configured);
+            expect(result.userId, isNull);
+            expect(result.displayName, isNull);
+            expect(result.message, contains('尚未验证'));
+          }
+        } finally {
+          dio.close();
+        }
+      },
+    );
+
     test(
       'confirmed Bili identity, explicit expiry and transient failure stay distinct',
       () async {

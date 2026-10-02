@@ -3,7 +3,15 @@ import 'package:test/test.dart';
 
 void main() {
   test('standalone Huya login cookies are redacted without a Cookie label', () {
-    for (final key in ['udb_l', 'udb_n', 'udb_oar', 'udb_passdata']) {
+    for (final key in [
+      'udb_l',
+      'udb_n',
+      'udb_oar',
+      'udb_passdata',
+      'udb_uid',
+      'udb_biztoken',
+      'udb_cred',
+    ]) {
       final result = LogRedactor.redact(
         '$key=synthetic-private-value; other=value',
       );
@@ -17,6 +25,9 @@ void main() {
       'bili_jct': 'synthetic-csrf-value',
       'sessionid': 'synthetic-douyin-value',
       'udb_l': 'synthetic-huya-value',
+      'udb_uid': 'synthetic-huya-user',
+      'udb_biztoken': 'synthetic-huya-token',
+      'udb_cred': 'synthetic-huya-restore',
       'nested': [
         {'ttwid': 'synthetic-device-value'},
       ],
