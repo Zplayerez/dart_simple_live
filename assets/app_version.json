@@ -1,7 +1,7 @@
 {
-  "version": "1.11.6",
-  "version_num": 11106,
-  "version_desc": "- 斗鱼播放地址到期前无缝切换，减少播放暂停",
+  "version": "1.11.7",
+  "version_num": 11107,
+  "version_desc": "- 新增四平台账号管理与网页登录\n- 修复 Windows 登录白屏、虎牙登录凭据识别和异常辅助 Cookie 导入\n- 斗鱼正常播放不再定时重启，播放失败时刷新地址恢复",
   "prerelease": false,
-  "download_url": "https://github.com/xiaoyaocz/dart_simple_live/releases"
+  "download_url": "https://github.com/Zplayerez/dart_simple_live/releases"
 }

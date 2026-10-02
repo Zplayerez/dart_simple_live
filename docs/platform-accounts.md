@@ -55,3 +55,7 @@ GitHub Actions `Platform accounts validation` 运行核心、共享包、App 和
 Windows CI 还通过 `flutter drive` 运行原生 WebView2 冒烟测试：复用网页登录的环境初始化入口，等待原生视图创建后加载本地 HTML，检查加载回调、JavaScript、截图像素及关闭后重新打开。测试不使用真实账号或平台网络，报告与截图保存为 `accounts-windows-webview-smoke` 产物；缺少 WebView2 Runtime 时会失败，不会跳过。可在安装了 WebView2 Runtime 的 Windows 上进入 `simple_live_app`，运行 `flutter drive -d windows --driver=test_driver/windows_webview_smoke_driver.dart --target=integration_test/windows_webview_smoke_test.dart --dart-define=INTEGRATION_TEST_SHOULD_REPORT_RESULTS_TO_NATIVE=false`。
 
 实机验收仍包括：各端官方网页登录、安全存储重启恢复、单平台退出隔离、TV 遥控器确认、跨设备配对，四平台真实账号取流，以及斗鱼 Windows 原画长时间观看、切房间、前后台和断网恢复。编译通过不等于这些体验已经通过。
+
+## 正式发布
+
+主应用通过 `v*` 标签触发 `App release build`，按标签触发时的提交构建，校验标签、App 版本与更新元数据一致。桌面和 iOS 构建沿用已验证的 Flutter 3.38.10 与依赖锁定文件。产物先上传草稿 Release；所有构建及验证通过后，再将草稿公开。缺少 Android 签名配置时不生成正式 APK；TV 需单独配置签名并发布，不跟随主应用版本号更新。
