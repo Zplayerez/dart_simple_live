@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:get/get.dart';
+import 'package:simple_live_account/simple_live_account.dart';
 import 'package:simple_live_app/modules/mine/account/platform_web_login_environment.dart';
 import 'package:simple_live_app/modules/mine/account/platform_web_login_page.dart';
 
@@ -36,12 +38,50 @@ class _View extends PlatformInAppWebViewWidget {
 
 class _WebPlatform extends InAppWebViewPlatform {
   final views = <_View>[];
+  Future<List<Cookie>> Function(WebUri) readCookies = (_) async => [];
+  @override
+  PlatformCookieManager createPlatformCookieManager(
+          PlatformCookieManagerCreationParams params) =>
+      _Cookies(params, (url) => readCookies(url));
   @override
   PlatformInAppWebViewWidget createPlatformInAppWebViewWidget(
       PlatformInAppWebViewWidgetCreationParams params) {
     final view = _View(params);
     views.add(view);
     return view;
+  }
+}
+
+class _Cookies extends PlatformCookieManager {
+  _Cookies(super.params, this.read) : super.implementation();
+  final Future<List<Cookie>> Function(WebUri) read;
+  @override
+  Future<List<Cookie>> getCookies({
+    required WebUri url,
+    PlatformInAppWebViewController? iosBelow11WebViewController,
+    PlatformInAppWebViewController? webViewController,
+  }) =>
+      read(url);
+}
+
+class _Environment extends PlatformWebViewEnvironment {
+  _Environment()
+      : super.implementation(const PlatformWebViewEnvironmentCreationParams());
+  @override
+  String get id => 'synthetic-cookie-environment';
+}
+
+class _CountingAccountManager extends PlatformAccountManager {
+  _CountingAccountManager() : super(sites: {});
+
+  int importCalls = 0;
+
+  @override
+  Future<PlatformAccountState> importCookie(String siteId, String raw,
+      {bool verify = true}) async {
+    importCalls++;
+    return PlatformAccountState(
+        siteId: siteId, status: LiveAccountStatus.configured);
   }
 }
 
@@ -52,12 +92,14 @@ void main() {
   final official = WebUri('https://www.douyu.com/');
 
   setUp(() {
+    Get.testMode = true;
     platform = _WebPlatform();
     InAppWebViewPlatform.instance = platform;
     nativeController = _Controller();
     controller =
         InAppWebViewController.fromPlatform(platform: nativeController);
   });
+  tearDown(() => Get.reset());
 
   Future<void> mount(WidgetTester tester,
       {Future<WebViewEnvironment?> Function()? prepare}) async {
@@ -74,6 +116,105 @@ void main() {
           .widget<TextButton>(find.widgetWithText(TextButton, '完成登录'))
           .onPressed !=
       null;
+
+  Future<void> readyForCollection(WidgetTester tester) async {
+    await mount(tester,
+        prepare: () async =>
+            WebViewEnvironment.fromPlatform(platform: _Environment()));
+    final callbacks = platform.views.single.params;
+    callbacks.onWebViewCreated!(controller);
+    callbacks.onLoadStop!(controller, official);
+    await tester.pump();
+  }
+
+  testWidgets(
+      'read failure clears busy and retry replaces stale error with progress',
+      (tester) async {
+    final accounts = _CountingAccountManager();
+    Get.put<PlatformAccountManager>(accounts);
+    platform.readCookies = (_) async => throw StateError('synthetic-private');
+    await readyForCollection(tester);
+    await tester.tap(find.text('完成登录'));
+    await tester.pump();
+    expect(find.textContaining('无法读取浏览器登录凭据'), findsOneWidget);
+    expect(find.textContaining('synthetic-private'), findsNothing);
+    expect(canComplete(tester), isTrue);
+    expect(find.byType(LinearProgressIndicator), findsNothing);
+
+    final pending = Completer<List<Cookie>>();
+    platform.readCookies = (_) => pending.future;
+    await tester.tap(find.text('完成登录'));
+    await tester.pump();
+    expect(find.textContaining('无法读取浏览器登录凭据'), findsNothing);
+    expect(find.text('正在读取浏览器登录凭据'), findsOneWidget);
+    expect(canComplete(tester), isFalse);
+    await tester.pump(const Duration(seconds: 16));
+    expect(find.textContaining('读取浏览器登录凭据超时'), findsOneWidget);
+    expect(canComplete(tester), isTrue);
+    expect(accounts.importCalls, 0);
+    pending.complete([
+      Cookie(name: 'acf_auth', value: 'synthetic-late', domain: '.douyu.com'),
+    ]);
+    await tester.pump();
+    expect(find.textContaining('读取浏览器登录凭据超时'), findsOneWidget);
+    expect(find.textContaining('未能导入'), findsNothing);
+    expect(accounts.importCalls, 0);
+  });
+
+  testWidgets(
+      'unsupported auxiliary cookies do not turn an import error into a read error',
+      (tester) async {
+    platform.readCookies = (_) async => [
+          Cookie(name: '', value: 'synthetic-nameless', domain: '.douyu.com'),
+          Cookie(name: 'auxiliary', value: 42, domain: '.douyu.com'),
+          Cookie(name: 'emptyAuxiliary', value: null, domain: '.douyu.com'),
+          Cookie(
+              name: 'acf_auth',
+              value: 'synthetic-session',
+              domain: '.douyu.com'),
+        ];
+    await readyForCollection(tester);
+    // No account service is registered: collection succeeds, import cannot.
+    await tester.tap(find.text('完成登录'));
+    await tester.pump();
+    expect(find.text('凭据已读取，但未能导入账号，请重试。'), findsOneWidget);
+    expect(find.textContaining('synthetic-'), findsNothing);
+    expect(find.textContaining('无法读取'), findsNothing);
+    expect(canComplete(tester), isTrue);
+  });
+
+  testWidgets('missing session remains a distinct recoverable result',
+      (tester) async {
+    platform.readCookies = (_) async => [
+          Cookie(name: '', value: 'synthetic-nameless', domain: '.douyu.com'),
+          Cookie(name: 'acf_uid', value: '123', domain: '.douyu.com'),
+        ];
+    await readyForCollection(tester);
+    await tester.tap(find.text('完成登录'));
+    await tester.pump();
+    expect(find.textContaining('尚未读取到可导入的账号凭据'), findsOneWidget);
+    expect(find.textContaining('无法读取'), findsNothing);
+    expect(canComplete(tester), isTrue);
+  });
+
+  testWidgets('read completing after page disposal cannot import an account',
+      (tester) async {
+    final accounts = _CountingAccountManager();
+    Get.put<PlatformAccountManager>(accounts);
+    final pending = Completer<List<Cookie>>();
+    platform.readCookies = (_) => pending.future;
+    await readyForCollection(tester);
+    await tester.tap(find.text('完成登录'));
+    await tester.pump();
+    await tester.pumpWidget(const SizedBox());
+    expect(accounts.importCalls, 0);
+    pending.complete([
+      Cookie(name: 'acf_auth', value: 'synthetic-late', domain: '.douyu.com'),
+    ]);
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+    expect(accounts.importCalls, 0);
+  });
 
   testWidgets(
       'native creation without callback times out and retry recreates view',

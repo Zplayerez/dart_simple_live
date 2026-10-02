@@ -18,6 +18,11 @@ enum LiveAccountStatus {
 /// Immutable Cookie header. Values never appear in toString or parse errors.
 class PlatformCookie {
   final Map<String, String> values;
+  static final _namePattern = RegExp(r"^[!#$%&'*+.^_`|~0-9a-zA-Z-]+$");
+
+  /// Header token grammar, shared with native browser-cookie import adapters.
+  /// Browsers can retain auxiliary cookies that cannot form a valid header.
+  static bool isValidName(String name) => _namePattern.hasMatch(name);
 
   PlatformCookie._(Map<String, String> values)
     : values = Map.unmodifiable(values);
@@ -43,7 +48,7 @@ class PlatformCookie {
         throw const FormatException('请输入完整 Cookie，格式为 name=value');
       }
       final name = item.substring(0, equal).trim();
-      if (!RegExp(r"^[!#$%&'*+.^_`|~0-9a-zA-Z-]+$").hasMatch(name)) {
+      if (!isValidName(name)) {
         throw const FormatException('Cookie 字段名称无效');
       }
       cookies[name] = item.substring(equal + 1).trim();

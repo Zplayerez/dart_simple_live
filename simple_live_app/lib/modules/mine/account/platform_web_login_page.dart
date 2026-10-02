@@ -13,6 +13,8 @@ import 'package:simple_live_app/modules/mine/account/platform_web_login_policy.d
 
 enum _LoginPhase { preparing, creating, loading, ready, failed }
 
+enum _CompletionPhase { reading, importing, completed }
+
 /// Login is completed by the user on the official site. No password entry,
 /// captcha solving or Cookie JavaScript is implemented by this application.
 class PlatformWebLoginPage extends StatefulWidget {
@@ -37,6 +39,7 @@ class _PlatformWebLoginPageState extends State<PlatformWebLoginPage> {
   Widget? _view;
   Uri? _currentUri;
   bool _busy = false;
+  _CompletionPhase _completionPhase = _CompletionPhase.reading;
   _LoginPhase _phase = _LoginPhase.preparing;
   String? _error;
   Timer? _deadline;
@@ -144,7 +147,11 @@ class _PlatformWebLoginPageState extends State<PlatformWebLoginPage> {
   Future<void> _complete() async {
     if (_busy || _phase != _LoginPhase.ready) return;
     if (!isOfficialAccountPage(widget.siteId, _currentUri)) return;
-    setState(() => _busy = true);
+    setState(() {
+      _busy = true;
+      _error = null;
+      _completionPhase = _CompletionPhase.reading;
+    });
     try {
       final cookieManager =
           CookieManager.instance(webViewEnvironment: _environment);
@@ -152,28 +159,47 @@ class _PlatformWebLoginPageState extends State<PlatformWebLoginPage> {
         widget.siteId,
         readCookies: (uri) async {
           final values = await cookieManager.getCookies(url: WebUri.uri(uri));
-          return values
-              .map((cookie) => OfficialWebCookie(
-                    name: cookie.name,
-                    value: cookie.value,
-                    domain: cookie.domain,
-                  ))
-              .toList();
+          // Native Cookie.value is dynamic. An unsupported auxiliary entry
+          // must not prevent otherwise valid account cookies from importing.
+          return [
+            for (final cookie in values)
+              if (cookie.value is String)
+                OfficialWebCookie(
+                  name: cookie.name,
+                  value: cookie.value as String,
+                  domain: cookie.domain,
+                ),
+          ];
         },
-      );
+      ).timeout(const Duration(seconds: 15));
       if (!mounted) return;
       if (header == null) {
-        SmartDialog.showToast('尚未读取到可导入的账号凭据。若官网已登录，请返回平台首页后重试，或使用 Cookie 导入。');
+        setState(
+            () => _error = '尚未读取到可导入的账号凭据。若官网已登录，请返回平台首页后重试，或使用 Cookie 导入。');
         return;
       }
+      setState(() => _completionPhase = _CompletionPhase.importing);
       final state = await PlatformAccountManager.instance
           .importCookie(widget.siteId, header);
       if (!mounted) return;
+      _completionPhase = _CompletionPhase.completed;
       SmartDialog.showToast(accountResultMessage(state));
       Get.back();
+    } on PlatformWebCookieCollectionException catch (error) {
+      if (mounted) setState(() => _error = error.message);
+    } on TimeoutException {
+      if (mounted) {
+        setState(() => _error = _completionPhase == _CompletionPhase.reading
+            ? '读取浏览器登录凭据超时，请点击“完成登录”重试。'
+            : '账号导入暂未完成，请返回账号管理查看状态。');
+      }
     } catch (_) {
       if (mounted) {
-        setState(() => _error = '无法读取或验证网页登录凭据，请重试或使用 Cookie 导入。');
+        setState(() => _error = switch (_completionPhase) {
+              _CompletionPhase.reading => '无法读取浏览器登录凭据，请重试或使用 Cookie 导入。',
+              _CompletionPhase.importing => '凭据已读取，但未能导入账号，请重试。',
+              _CompletionPhase.completed => '账号凭据已导入，请返回账号管理查看状态。',
+            });
       }
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -242,13 +268,17 @@ class _PlatformWebLoginPageState extends State<PlatformWebLoginPage> {
 
   @override
   Widget build(BuildContext context) {
-    final status = switch (_phase) {
-      _LoginPhase.preparing => '正在准备网页登录组件',
-      _LoginPhase.creating => '正在启动网页登录组件',
-      _LoginPhase.loading => '正在加载平台官方网站',
-      _LoginPhase.ready => '在官网完成登录及验证码，再点击“完成登录”。账号状态将单独验证。',
-      _LoginPhase.failed => '网页登录未能打开',
-    };
+    final status = _busy
+        ? (_completionPhase == _CompletionPhase.reading
+            ? '正在读取浏览器登录凭据'
+            : '正在导入账号凭据')
+        : switch (_phase) {
+            _LoginPhase.preparing => '正在准备网页登录组件',
+            _LoginPhase.creating => '正在启动网页登录组件',
+            _LoginPhase.loading => '正在加载平台官方网站',
+            _LoginPhase.ready => '在官网完成登录及验证码，再点击“完成登录”。账号状态将单独验证。',
+            _LoginPhase.failed => '网页登录未能打开',
+          };
     return Scaffold(
       appBar: AppBar(
         title: Text('${accountPlatformName(widget.siteId)}网页登录'),

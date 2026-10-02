@@ -53,6 +53,23 @@ class OfficialWebCookie {
   final String? domain;
 }
 
+enum PlatformWebCookieCollectionFailure { read, format }
+
+class PlatformWebCookieCollectionException implements Exception {
+  final PlatformWebCookieCollectionFailure failure;
+
+  const PlatformWebCookieCollectionException(this.failure);
+
+  String get message => switch (failure) {
+        PlatformWebCookieCollectionFailure.read => '无法读取浏览器登录凭据，请点击“完成登录”重试。',
+        PlatformWebCookieCollectionFailure.format =>
+          '浏览器登录凭据格式无法识别，请重试或使用 Cookie 导入。',
+      };
+
+  @override
+  String toString() => message;
+}
+
 /// Read only the existing platform root/www scopes. In particular, credentials
 /// from a visited account subdomain are not widened into a shared Cookie header.
 Future<String?> collectOfficialAccountCookieHeader(
@@ -60,16 +77,25 @@ Future<String?> collectOfficialAccountCookieHeader(
   required Future<List<OfficialWebCookie>> Function(Uri uri) readCookies,
 }) async {
   final root = officialCookieRoots[siteId];
-  if (root == null) throw ArgumentError('Unsupported account platform');
+  if (root == null) {
+    throw const PlatformWebCookieCollectionException(
+        PlatformWebCookieCollectionFailure.format);
+  }
   final cookies = <OfficialWebCookie>[];
   try {
     for (final host in [root, 'www.$root']) {
       cookies.addAll(
           await readCookies(Uri(scheme: 'https', host: host, path: '/')));
     }
-    return officialAccountCookieHeader(siteId, cookies);
   } catch (_) {
-    throw StateError('无法读取平台网页登录凭据');
+    throw const PlatformWebCookieCollectionException(
+        PlatformWebCookieCollectionFailure.read);
+  }
+  try {
+    return officialAccountCookieHeader(siteId, cookies);
+  } on FormatException {
+    throw const PlatformWebCookieCollectionException(
+        PlatformWebCookieCollectionFailure.format);
   }
 }
 
@@ -84,7 +110,9 @@ String? officialAccountCookieHeader(
         !isOfficialAccountHost(siteId, cookie.domain!)) {
       continue;
     }
-    if (cookie.name.contains(';') ||
+    // A browser can store nameless/non-token auxiliary cookies. Skip each one
+    // instead of letting it poison an otherwise valid account session header.
+    if (!PlatformCookie.isValidName(cookie.name) ||
         cookie.value.contains(';') ||
         RegExp(r'[\x00-\x1f\x7f]').hasMatch('${cookie.name}${cookie.value}')) {
       continue;

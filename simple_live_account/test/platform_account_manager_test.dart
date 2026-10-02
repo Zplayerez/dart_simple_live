@@ -64,6 +64,18 @@ PlatformAccountManager managerWith(
   clearWebCookies: cleanup,
 );
 
+String syntheticDouyinWebHeader() => [
+  'sessionid=synthetic-session',
+  'sessionid_ss=synthetic-secure-session',
+  'sid_tt=synthetic-account-token',
+  'ttwid=synthetic-device%7Cencoded==',
+  'passport_csrf_token=synthetic-csrf',
+  '__ac_nonce=synthetic-nonce',
+  'preferences={"volume":0.5,"autoplay":true}',
+  for (var index = 0; index < 96; index++)
+    'synthetic_aux_$index=${List.filled(128, 'x').join()}',
+].join('; ');
+
 void main() {
   test(
     'verification of a rotated token supersedes an old expiry response',
@@ -505,4 +517,104 @@ void main() {
       expect(manager.credentialFor('douyin'), 'ttwid=synthetic-device-token');
     },
   );
+
+  group('Douyin web credentials with the real site adapter', () {
+    test(
+      'long mixed header survives import and secure-store restart',
+      () async {
+        final header = syntheticDouyinWebHeader();
+        expect(header.length, greaterThan(8192));
+        final store = MemoryCredentialStore();
+        final site = DouyinSite()..headers['Cookie'] = 'synthetic-stale-cookie';
+        final manager = PlatformAccountManager(
+          sites: {'douyin': site},
+          store: store,
+        );
+
+        final imported = await manager.importCookie('douyin', header);
+        expect(imported.status, LiveAccountStatus.configured);
+        expect(imported.persistence, AccountPersistence.secure);
+        expect(imported.userId, isNull);
+        expect(imported.hasCredential, isTrue);
+        expect(store.values['douyin'], header);
+        expect(site.cookie, header);
+        expect((await site.getRequestHeaders())['cookie'], header);
+        expect(site.headers.containsKey('Cookie'), isFalse);
+
+        final restoredSite = DouyinSite();
+        final restarted = PlatformAccountManager(
+          sites: {'douyin': restoredSite},
+          store: store,
+        );
+        await restarted.initialize();
+        await restarted.verifyAll();
+        expect(restarted.credentialFor('douyin'), header);
+        expect((await restoredSite.getRequestHeaders())['cookie'], header);
+        expect(
+          restarted.account('douyin').persistence,
+          AccountPersistence.secure,
+        );
+        expect(
+          restarted.account('douyin').status,
+          LiveAccountStatus.configured,
+        );
+        expect(restarted.account('douyin').userId, isNull);
+        expect(restarted.account('douyin').message, contains('尚未验证'));
+      },
+    );
+
+    test(
+      'visitor and account cookies are distinguished without verified login',
+      () async {
+        final site = DouyinSite();
+        final manager = PlatformAccountManager(
+          sites: {'douyin': site},
+          store: MemoryCredentialStore(),
+        );
+        final visitor = await manager.importCookie(
+          'douyin',
+          'ttwid=synthetic-visitor',
+        );
+        expect(visitor.status, LiveAccountStatus.configured);
+        expect(visitor.userId, isNull);
+        expect(visitor.message, contains('游客设备 Cookie'));
+        expect(site.accountSession!.cookie.hasAccountSession, isFalse);
+
+        final account = await manager.importCookie(
+          'douyin',
+          'ttwid=synthetic-device; sessionid=synthetic-session',
+        );
+        expect(account.status, LiveAccountStatus.configured);
+        expect(account.userId, isNull);
+        expect(account.message, contains('账号身份与播放权益尚未验证'));
+        expect(site.accountSession!.cookie.hasAccountSession, isTrue);
+      },
+    );
+
+    for (final failReadback in [false, true]) {
+      test(
+        'long header still imports when secure ${failReadback ? 'readback' : 'write'} fails',
+        () async {
+          final store = MemoryCredentialStore()
+            ..failWrites = !failReadback
+            ..failReads = failReadback;
+          final site = DouyinSite();
+          final manager = PlatformAccountManager(
+            sites: {'douyin': site},
+            store: store,
+          );
+          final header = syntheticDouyinWebHeader();
+
+          final result = await manager.importCookie('douyin', header);
+          expect(result.status, LiveAccountStatus.configured);
+          expect(result.persistence, AccountPersistence.sessionOnly);
+          expect(result.storageMessage, contains('仅本次会话有效'));
+          expect(result.hasCredential, isTrue);
+          expect(result.userId, isNull);
+          expect(manager.credentialFor('douyin'), header);
+          expect((await site.getRequestHeaders())['cookie'], header);
+        },
+      );
+    }
+  });
 }

@@ -215,8 +215,10 @@ Future<void> _checkNativeAccountCookies(WebViewEnvironment environment,
       'udb_anobiztoken',
       'udb_uid',
       'udb_biztoken',
+      'sessionid',
     ],
     'douyu.com': ['udb_uid', 'udb_biztoken'],
+    'douyin.com': ['ttwid', 'sessionid', '', 'odd:name'],
   };
 
   Future<String?> collect(String siteId) => collectOfficialAccountCookieHeader(
@@ -236,7 +238,7 @@ Future<void> _checkNativeAccountCookies(WebViewEnvironment environment,
         },
       );
 
-  Future<void> put(String root, String name) async {
+  Future<bool> tryPut(String root, String name) async {
     // Write through the visible login view, then collect through the separate
     // native CookieManager to prove they share the same browser profile.
     dynamic stored;
@@ -256,9 +258,13 @@ Future<void> _checkNativeAccountCookies(WebViewEnvironment environment,
         },
       ).timeout(const Duration(seconds: 5));
     } catch (_) {
-      throw StateError('Native fixture Cookie write failed.');
+      return false;
     }
-    expect(stored is Map && stored['success'] == true, isTrue,
+    return stored is Map && stored['success'] == true;
+  }
+
+  Future<void> put(String root, String name) async {
+    expect(await tryPut(root, name), isTrue,
         reason: 'Native fixture Cookie write failed.');
   }
 
@@ -317,19 +323,80 @@ Future<void> _checkNativeAccountCookies(WebViewEnvironment environment,
         isTrue);
     result['modernHttpOnlyPairAccepted'] = true;
     result['modernPairCookieCount'] = modernPair.length;
+
+    // Reproduce the native browser-cookie shape that previously poisoned an
+    // otherwise usable Douyin session during header construction. This is a
+    // synthetic regression, not evidence about any user's actual Cookie jar.
+    await put('huya.com', 'sessionid');
+    await put('douyin.com', 'ttwid');
+    await put('douyin.com', '');
+    final punctuationAccepted = await tryPut('douyin.com', 'odd:name');
+    final douyinCookies = await manager
+        .getCookies(url: WebUri('https://www.douyin.com/'))
+        .timeout(const Duration(seconds: 5));
+    final nameless = douyinCookies.where((cookie) => cookie.name.isEmpty);
+    expect(nameless.length, 1);
+    expect(
+        nameless.every((cookie) =>
+            cookie.value.isNotEmpty &&
+            cookie.isHttpOnly == true &&
+            cookie.isSecure == true &&
+            cookie.path == '/' &&
+            cookie.domain == '.douyin.com'),
+        isTrue,
+        reason: 'Native collection must actually see the nameless fixture.');
+    result['douyinNamelessCookieObserved'] = true;
+    result['douyinNamelessCookieCount'] = nameless.length;
+    // Punctuation acceptance can vary across WebView2 versions. Record it
+    // without making that separate browser behavior a mandatory fixture.
+    result['douyinPunctuationCookieObserved'] = punctuationAccepted &&
+        douyinCookies.any((cookie) => cookie.name == 'odd:name');
+
+    expect(await collect('douyin') == null, isTrue,
+        reason: 'Another domain session must not authenticate Douyin.');
+    result['douyinCrossDomainSessionRejected'] = true;
+    await put('douyin.com', 'sessionid');
+    final douyinHeader = await collect('douyin');
+    expect(douyinHeader != null, isTrue,
+        reason: 'An auxiliary Cookie must not discard the Douyin session.');
+    final douyinSession = PlatformCookie.parse(douyinHeader!);
+    expect(
+        douyinSession.hasAccountSessionFor(LiveAccountPlatform.douyin), isTrue);
+    expect(douyinSession.values.containsKey('sessionid'), isTrue);
+    expect(douyinSession.values.containsKey('ttwid'), isTrue);
+    expect(douyinSession.values.containsKey(''), isFalse);
+    expect(douyinSession.values.containsKey('odd:name'), isFalse);
+    expect(douyinSession.values.containsKey('udb_uid'), isFalse);
+    expect(douyinSession.values.containsKey('udb_biztoken'), isFalse);
+    result['douyinSessionAccepted'] = true;
+    result['douyinAuxiliaryNamesOmitted'] = true;
   } finally {
     // Delete only the fixture names at their exact domain/path, including
     // partial setup. Never clear a whole browser jar.
     for (final entry in fixtureNames.entries) {
       for (final name in entry.value) {
-        await manager
-            .deleteCookie(
-              url: WebUri('https://www.${entry.key}/'),
-              domain: '.${entry.key}',
-              path: '/',
-              name: name,
-            )
-            .timeout(const Duration(seconds: 5));
+        if (name.isEmpty) {
+          // CookieManager.deleteCookie asserts nonempty names. CDP supports
+          // deleting this exact nameless domain/path fixture without a wipe.
+          await visibleWebView.callDevToolsProtocolMethod(
+            methodName: 'Network.deleteCookies',
+            parameters: {
+              'url': 'https://www.${entry.key}/',
+              'domain': '.${entry.key}',
+              'path': '/',
+              'name': name,
+            },
+          ).timeout(const Duration(seconds: 5));
+        } else {
+          await manager
+              .deleteCookie(
+                url: WebUri('https://www.${entry.key}/'),
+                domain: '.${entry.key}',
+                path: '/',
+                name: name,
+              )
+              .timeout(const Duration(seconds: 5));
+        }
       }
       final remaining = await manager
           .getCookies(url: WebUri('https://www.${entry.key}/'))

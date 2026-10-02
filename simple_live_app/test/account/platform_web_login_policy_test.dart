@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:simple_live_app/modules/mine/account/platform_web_login_policy.dart';
+import 'package:simple_live_core/simple_live_core.dart';
 
 void main() {
   for (final tokenHost in ['huya.com', 'www.huya.com']) {
@@ -84,8 +85,11 @@ void main() {
           calls++;
           return [];
         }),
-        throwsA(isA<ArgumentError>().having((error) => error.toString(),
-            'message', isNot(contains('unknown-private-input')))));
+        throwsA(isA<PlatformWebCookieCollectionException>()
+            .having((error) => error.failure, 'failure',
+                PlatformWebCookieCollectionFailure.format)
+            .having((error) => error.toString(), 'message',
+                isNot(contains('unknown-private-input')))));
     expect(calls, 0);
   });
 
@@ -95,8 +99,95 @@ void main() {
         collectOfficialAccountCookieHeader('huya', readCookies: (_) async {
           throw StateError('synthetic-private-token');
         }),
-        throwsA(isA<StateError>().having((error) => error.toString(), 'message',
-            isNot(contains('synthetic-private-token')))));
+        throwsA(isA<PlatformWebCookieCollectionException>()
+            .having((error) => error.failure, 'failure',
+                PlatformWebCookieCollectionFailure.read)
+            .having((error) => error.toString(), 'message',
+                isNot(contains('synthetic-private-token')))));
+  });
+
+  test('unsupported auxiliary cookies do not poison a valid Douyin session',
+      () async {
+    const auxiliaryNames = [
+      '',
+      'aux name',
+      'aux:name',
+      'aux(name)',
+      'aux,name',
+      'aux/name',
+      'aux"name',
+      'aux[name]',
+      '名称',
+    ];
+    for (final name in auxiliaryNames) {
+      expect(PlatformCookie.isValidName(name), isFalse);
+      // Strict manual-header parsing is preserved; only the browser adapter
+      // skips entries that cannot be represented in the imported header.
+      expect(() => PlatformCookie.parse('$name=synthetic-auxiliary'),
+          throwsFormatException);
+    }
+    final requested = <String>[];
+    final header = await collectOfficialAccountCookieHeader('douyin',
+        readCookies: (uri) async {
+      requested.add(uri.toString());
+      return [
+        const OfficialWebCookie(
+            name: 'sessionid',
+            value: 'synthetic-token==',
+            domain: '.douyin.com'),
+        const OfficialWebCookie(
+            name: 'passport_csrf_token',
+            value: 'synthetic%2Bmetadata',
+            domain: '.douyin.com'),
+        for (final name in auxiliaryNames)
+          OfficialWebCookie(
+              name: name, value: 'synthetic-auxiliary', domain: '.douyin.com'),
+        const OfficialWebCookie(
+            name: 'sessionid', value: 'foreign-token', domain: '.huya.com'),
+      ];
+    });
+    expect(requested, ['https://douyin.com/', 'https://www.douyin.com/']);
+    expect(header,
+        'sessionid=synthetic-token==; passport_csrf_token=synthetic%2Bmetadata');
+  });
+
+  test('unsupported native names cannot be normalized into account markers',
+      () {
+    for (final name in ['', ' sessionid', 'sessionid ', 'sessionid=forged']) {
+      expect(
+          officialAccountCookieHeader('douyin', [
+            OfficialWebCookie(
+                name: name,
+                value: 'synthetic-auxiliary',
+                domain: '.douyin.com'),
+            const OfficialWebCookie(
+                name: 'ttwid',
+                value: 'synthetic-device',
+                domain: '.douyin.com'),
+          ]),
+          isNull);
+    }
+  });
+
+  test('a failed second scope read does not import a partial account header',
+      () async {
+    await expectLater(
+        collectOfficialAccountCookieHeader('douyin', readCookies: (uri) async {
+          if (uri.host.startsWith('www.')) {
+            throw const FormatException('synthetic-private-native-response');
+          }
+          return const [
+            OfficialWebCookie(
+                name: 'sessionid',
+                value: 'synthetic-token',
+                domain: '.douyin.com')
+          ];
+        }),
+        throwsA(isA<PlatformWebCookieCollectionException>()
+            .having((error) => error.failure, 'failure',
+                PlatformWebCookieCollectionFailure.read)
+            .having((error) => error.toString(), 'message',
+                isNot(contains('synthetic-private-native-response')))));
   });
 
   test(
