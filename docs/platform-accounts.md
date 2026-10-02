@@ -42,6 +42,8 @@ HTTP 日志不记录请求或响应正文、Cookie 和 Authorization。核心日
 
 自动测试使用合成凭据，覆盖账号迁移、验证竞态、退出失败保护、服务器 Cookie 更新、域名隔离、日志脱敏、配对篡改/过期/重放、确认与取消、普通备份排除账号，以及播放器命令排序和预取策略。
 
+App 与 TV 提交依赖锁文件，CI 强制按锁定结果解析，避免构建时自动更新到不兼容的原生插件。Linux/macOS 产物使用保留执行权限的 tar.gz 打包。
+
 GitHub Actions `Platform accounts validation` 运行核心、共享包、App 和 TV 测试，并尝试 Windows/macOS/Linux release 构建、App/TV Android debug APK、iOS 无签名构建。构建产物用于开发验证，不代表已发布正式版本；Android debug APK 不能覆盖使用其他签名的正式安装包。iOS 无签名构建不可直接安装。
 
 实机验收仍包括：各端官方网页登录、安全存储重启恢复、单平台退出隔离、TV 遥控器确认、跨设备配对，四平台真实账号取流，以及斗鱼 Windows 原画长时间观看、切房间、前后台和断网恢复。编译通过不等于这些体验已经通过。

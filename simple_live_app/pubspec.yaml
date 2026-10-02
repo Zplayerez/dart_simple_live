@@ -47,7 +47,7 @@ dependencies:
 
   #系统交互
   package_info_plus: ^9.0.0 #包信息
-  device_info_plus: ^12.2.0 #设备信息
+  device_info_plus: 12.3.0 #设备信息
   url_launcher: ^6.3.2 #打开链接
   share_plus: ^12.0.1 #分享
   path_provider: ^2.1.5 #常用路径
@@ -55,7 +55,7 @@ dependencies:
   permission_handler: ^12.0.1 #权限处理
   image_gallery_saver_plus: ^4.0.1 #图片保存到相册
   screen_brightness: ^2.1.7 #亮度控制
-  auto_orientation_v2: ^2.3.6 #屏幕方向
+  auto_orientation_v2: 2.3.6 #屏幕方向；后续 Kotlin 插件版本需要更新 Android 构建工具链
   wakelock_plus: ^1.4.0 #屏幕常亮
   file_picker: ^10.3.7 #文件选择
   window_manager: ^0.5.1 #窗口管理

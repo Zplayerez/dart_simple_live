@@ -22,6 +22,7 @@ concurrency:
 jobs:
   tests:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: subosito/flutter-action@v2
@@ -44,13 +45,13 @@ jobs:
       - name: Main app checks
         working-directory: simple_live_app
         run: |
-          flutter pub get
+          flutter pub get --enforce-lockfile
           flutter analyze --no-fatal-infos
           flutter test
       - name: TV app checks
         working-directory: simple_live_tv_app
         run: |
-          flutter pub get
+          flutter pub get --enforce-lockfile
           flutter analyze --no-fatal-infos
           flutter test
 
@@ -62,13 +63,17 @@ jobs:
           - os: ubuntu-24.04
             platform: linux
             bundle: simple_live_app/build/linux/x64/release/bundle
+            artifact: accounts-linux.tar.gz
           - os: windows-2022
             platform: windows
             bundle: simple_live_app/build/windows/x64/runner/Release
+            artifact: simple_live_app/build/windows/x64/runner/Release
           - os: macos-14
             platform: macos
             bundle: simple_live_app/build/macos/Build/Products/Release
+            artifact: accounts-macos.tar.gz
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: subosito/flutter-action@v2
@@ -81,16 +86,20 @@ jobs:
       - name: Build desktop
         working-directory: simple_live_app
         run: |
-          flutter pub get
+          flutter pub get --enforce-lockfile
           flutter build ${{ matrix.platform }} --release
+      - name: Preserve Unix executable permissions
+        if: matrix.platform != 'windows'
+        run: tar -czf accounts-${{ matrix.platform }}.tar.gz -C "${{ matrix.bundle }}" .
       - uses: actions/upload-artifact@v4
         with:
           name: accounts-${{ matrix.platform }}
-          path: ${{ matrix.bundle }}
+          path: ${{ matrix.artifact }}
           retention-days: 7
 
   android:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -108,7 +117,7 @@ jobs:
       - name: Build debug APK without release signing keys
         working-directory: ${{ matrix.app }}
         run: |
-          flutter pub get
+          flutter pub get --enforce-lockfile
           flutter build apk --debug
       - uses: actions/upload-artifact@v4
         with:
@@ -118,6 +127,7 @@ jobs:
 
   ios:
     runs-on: macos-14
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: subosito/flutter-action@v2
@@ -127,5 +137,5 @@ jobs:
       - name: Build iOS without distribution signing
         working-directory: simple_live_app
         run: |
-          flutter pub get
+          flutter pub get --enforce-lockfile
           flutter build ios --release --no-codesign
