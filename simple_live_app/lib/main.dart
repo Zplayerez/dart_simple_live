@@ -42,7 +42,10 @@ import 'package:dynamic_color/dynamic_color.dart';
 
 Future<void> main() async {
   final timings = StartupTimings();
-  WidgetsFlutterBinding.ensureInitialized();
+  final binding = WidgetsFlutterBinding.ensureInitialized();
+  // Window/plugin initialization may schedule an empty frame before runApp.
+  // Only release the first native frame once the real app is attached.
+  binding.deferFirstFrame();
   await Future.wait([
     timings.measure('dataMigration', migrateData),
     timings.measure('window', initWindow),
@@ -65,6 +68,7 @@ Future<void> main() async {
   );
   SystemChrome.setSystemUIOverlayStyle(systemUiOverlayStyle);
   runApp(const MyApp());
+  binding.allowFirstFrame();
   unawaited(_afterFirstFrame(timings));
 }
 

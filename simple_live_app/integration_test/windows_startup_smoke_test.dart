@@ -23,6 +23,9 @@ import 'package:simple_live_core/simple_live_core.dart';
 // run this identical harness against the published baseline and the change.
 void main() {
   final binding = IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+  // Fixture setup and pump polling must not rasterize a blank "first frame".
+  // Both baseline and optimized builds release this gate at the same boundary.
+  binding.deferFirstFrame();
 
   testWidgets('Windows starts with logged-out accounts and can create a player',
       (tester) async {
@@ -78,6 +81,8 @@ void main() {
     app.main();
     await _waitFor(
         tester, () => find.byType(IndexedPage).evaluate().isNotEmpty);
+    binding.allowFirstFrame();
+    await tester.pump();
     await binding.waitUntilFirstFrameRasterized;
     report['dartToFirstHomeMs'] = launch.elapsedMicroseconds / 1000;
     for (final id in Sites.allSites.keys) {

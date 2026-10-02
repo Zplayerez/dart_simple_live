@@ -3,7 +3,9 @@ name: Windows startup comparison
 on:
   push:
     branches: [feat/platform-accounts]
-    paths: ['.github/workflows/startup_performance.yml']
+    paths:
+      - '.github/workflows/startup_performance.yml'
+      - 'simple_live_app/integration_test/windows_startup_smoke_test.dart'
   workflow_dispatch:
     inputs:
       baseline:
@@ -13,6 +15,10 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  group: windows-startup-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   compare:
