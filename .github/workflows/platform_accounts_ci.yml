@@ -16,7 +16,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: platform-accounts-${{ github.ref }}
+  group: platform-accounts-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
