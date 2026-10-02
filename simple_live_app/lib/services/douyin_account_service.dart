@@ -1,43 +1,34 @@
 import 'package:get/get.dart';
-import 'package:simple_live_app/app/constant.dart';
-import 'package:simple_live_app/app/sites.dart';
-import 'package:simple_live_app/services/local_storage_service.dart';
-import 'package:simple_live_core/simple_live_core.dart';
+import 'package:simple_live_account/simple_live_account.dart';
 
+/// Compatibility facade; a configured ttwid is not a verified account.
 class DouyinAccountService extends GetxService {
-  static DouyinAccountService get instance =>
-      Get.find<DouyinAccountService>();
+  static DouyinAccountService get instance => Get.find();
 
-  var cookie = "";
-  var hasCookie = false.obs;
+  final hasCookie = false.obs;
+  Worker? _worker;
+  PlatformAccountManager get _manager => PlatformAccountManager.instance;
+  String get cookie => _manager.credentialFor('douyin');
 
   @override
   void onInit() {
-    cookie = LocalStorageService.instance
-        .getValue(LocalStorageService.kDouyinCookie, "");
-    hasCookie.value = cookie.isNotEmpty;
-    setSite();
     super.onInit();
+    _refresh();
+    _worker = ever(_manager.accounts, (_) => _refresh());
   }
 
-  void setSite() {
-    var site = (Sites.allSites[Constant.kDouyin]!.liveSite as DouyinSite);
-    site.cookie = cookie;
+  void _refresh() {
+    hasCookie.value = _manager.account('douyin').hasCredential;
   }
 
-  void setCookie(String cookie) {
-    this.cookie = cookie;
-    LocalStorageService.instance
-        .setValue(LocalStorageService.kDouyinCookie, cookie);
-    hasCookie.value = cookie.isNotEmpty;
-    setSite();
-  }
+  Future<PlatformAccountState> setCookie(String cookie) =>
+      _manager.importCookie('douyin', cookie);
 
-  void clearCookie() {
-    cookie = "";
-    LocalStorageService.instance
-        .setValue(LocalStorageService.kDouyinCookie, "");
-    hasCookie.value = false;
-    setSite();
+  Future<PlatformAccountState> clearCookie() => _manager.logout('douyin');
+
+  @override
+  void onClose() {
+    _worker?.dispose();
+    super.onClose();
   }
 }

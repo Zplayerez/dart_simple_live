@@ -1,4 +1,6 @@
 import 'dart:convert';
+
+import 'package:simple_live_account/simple_live_account.dart';
 import 'dart:io';
 import 'dart:isolate';
 import 'dart:typed_data';
@@ -14,13 +16,11 @@ import 'package:simple_live_app/app/controller/base_controller.dart';
 import 'package:simple_live_app/app/event_bus.dart';
 import 'package:simple_live_app/app/log.dart';
 import 'package:simple_live_app/app/utils.dart';
-import 'package:simple_live_app/app/utils/archive.dart';
-import 'package:simple_live_app/app/utils/document.dart';
 import 'package:simple_live_app/models/db/follow_user.dart';
 import 'package:simple_live_app/models/db/follow_user_tag.dart';
 import 'package:simple_live_app/models/db/history.dart';
 import 'package:simple_live_app/modules/sync/remote_sync/webdav/webdav_client.dart';
-import 'package:simple_live_app/services/bilibili_account_service.dart';
+import 'package:simple_live_app/modules/sync/remote_sync/webdav/settings_backup_archive.dart';
 import 'package:simple_live_app/services/db_service.dart';
 import 'package:simple_live_app/services/local_storage_service.dart';
 
@@ -31,7 +31,7 @@ class RemoteSyncWebDAVController extends BaseController {
   var isSyncFollows = true.obs;
   var isSyncHistories = true.obs;
   var isSyncBlockWord = true.obs;
-  var isSyncBilibiliAccount = true.obs;
+  var isSyncBilibiliAccount = false.obs;
 
   late DAVClient davClient;
   var user = "--".obs;
@@ -160,15 +160,16 @@ class RemoteSyncWebDAVController extends BaseController {
 
   // 备份所有数据
   Future<List<int>> _backupData() async {
-    final archive = Archive();
     List<int> zipBytes = [];
-    // 获取本地备份路径
-    var dir = (await getApplicationSupportDirectory()).path;
-    var profile = Directory(join(dir, 'backup'));
-    if (!profile.existsSync()) {
-      profile.createSync();
-    }
+    Directory? stagingDirectory;
     try {
+      final dir = (await getApplicationSupportDirectory()).path;
+      final backupRoot =
+          await Directory(join(dir, 'backup')).create(recursive: true);
+      // A crashed or older export may leave plaintext account files behind.
+      // Every export gets an isolated directory and an explicit file allowlist.
+      final profile = await backupRoot.createTemp('public-export-');
+      stagingDirectory = profile;
       // archive.add(filepath, data_map) 会导致文件损坏
       // follows
       var userFollowList = DBService.instance.getFollowList();
@@ -199,28 +200,27 @@ class RemoteSyncWebDAVController extends BaseController {
       await userBlockedWordJsonFile
           .writeAsString(jsonEncode(dataShieldListMap));
 
-      // bilibili_account
-      var userBiliAccountCookieMap = {
-        'data': {'cookie': BiliBiliAccountService.instance.cookie}
-      };
-      final bilibiliAccountJsonFile =
-          File(join(profile.path, _userBilibiliAccountJsonName));
-      await bilibiliAccountJsonFile
-          .writeAsString(jsonEncode(userBiliAccountCookieMap));
       // settings
-      var settingList = LocalStorageService.instance.settingsBox.toMap();
+      var settingList = SettingsBackupPolicy.publicSettings(
+          LocalStorageService.instance.settingsBox.toMap());
       var dataSettingListMap = {'data': settingList};
       final settingJsonFile = File(join(profile.path, _userSettingsJsonName));
       await settingJsonFile.writeAsString(jsonEncode(dataSettingListMap));
 
-      // 遍历profile路径下的所有文件压缩
-      await archive.addDirectoryToArchive(profile.path, profile.path);
-      final zipEncoder = ZipEncoder();
-      zipBytes = zipEncoder.encode(archive);
-      profile.clearSync();
+      zipBytes = await SettingsBackupArchive.encode(profile);
     } catch (e) {
       Log.logPrint(e);
       SmartDialog.showToast("备份失败：$e");
+    } finally {
+      final profile = stagingDirectory;
+      if (profile != null) {
+        try {
+          await profile.delete(recursive: true);
+        } catch (_) {
+          // A cleanup error must never cause unrelated staging files to be
+          // included in a later export; every export uses a new directory.
+        }
+      }
     }
     return zipBytes;
   }
@@ -294,16 +294,23 @@ class RemoteSyncWebDAVController extends BaseController {
           isSyncBilibiliAccount.value) {
         try {
           var cookie = jsonData['cookie'];
-          BiliBiliAccountService.instance.setCookie(cookie);
-          BiliBiliAccountService.instance.loadUserInfo();
+          await PlatformAccountManager.instance
+              .importCookie('bilibili', cookie);
           Log.i('已同步哔哩哔哩账号');
         } catch (e) {
           Log.e('同步哔哩哔哩账号失败：$e', StackTrace.current);
         }
       } else if (file.name == _userSettingsJsonName) {
         try {
-          await LocalStorageService.instance.settingsBox.clear();
-          LocalStorageService.instance.settingsBox.putAll(jsonData);
+          // Preserve local credentials and failed-logout markers. Imported
+          // settings must never overwrite account state from another device.
+          final box = LocalStorageService.instance.settingsBox;
+          final publicKeys = box.keys
+              .where((key) => !SettingsBackupPolicy.isPrivateKey(key))
+              .toList();
+          await box.deleteAll(publicKeys);
+          await box
+              .putAll(SettingsBackupPolicy.publicSettings(jsonData as Map));
           Log.i('已同步用户设置');
         } catch (e) {
           Log.e("同步用户设置失败：$e", StackTrace.current);

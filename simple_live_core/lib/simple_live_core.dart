@@ -21,3 +21,8 @@ export 'src/model/live_room_item.dart';
 export 'src/model/live_search_result.dart';
 export 'src/model/live_anchor_item.dart';
 export 'src/model/live_play_url.dart';
+export 'src/model/playback_refresh_policy.dart';
+
+export 'src/account/platform_account.dart';
+export 'src/common/sensitive_log.dart';
+export 'src/common/playback_command_queue.dart';

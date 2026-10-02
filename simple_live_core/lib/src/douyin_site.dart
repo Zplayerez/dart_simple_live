@@ -6,12 +6,8 @@ import 'package:simple_live_core/src/common/convert_helper.dart';
 import 'package:simple_live_core/src/common/http_client.dart';
 import 'package:simple_live_core/src/scripts/douyin_sign.dart';
 
-class DouyinSite implements LiveSite {
-  @override
-  String id = "douyin";
-
-  @override
-  String name = "抖音直播";
+class DouyinSite extends LiveSite {
+  DouyinSite() : super(id: "douyin", name: "抖音直播");
 
   @override
   LiveDanmaku getDanmaku() => DouyinDanmaku();
@@ -24,17 +20,32 @@ class DouyinSite implements LiveSite {
 
   static const String kDefaultAuthority = "live.douyin.com";
 
-  /// 默认 Cookie - 只需要 ttwid 字段即可获取所有画质（包括蓝光）
-  /// 经过测试验证，LOGIN_STATUS=1 等其他字段都是可选的
+  /// 游客设备 Cookie，不代表账号登录或特定画质权益。
   static const String kDefaultCookie =
       "ttwid=1%7CB1qls3GdnZhUov9o2NxOMxxYS2ff6OSvEWbv0ytbES4%7C1680522049%7C280d802d6d478e3e78d0c807f7c487e7ffec0ae4e5fdd6a0fe74c3c6af149511";
 
   /// 用户设置的 cookie
-  String cookie = "";
+  String get cookie => accountSession?.cookie.header ?? '';
+  int _legacyVersion = 0;
+  PlatformCookie? _responseCookies;
+  set cookie(String value) {
+    final parsed = PlatformCookie.parse(value, allowBareTtwid: true);
+    accountSession = parsed.isEmpty
+        ? null
+        : LiveAccountSession(
+            platform: LiveAccountPlatform.douyin,
+            cookie: parsed,
+            version: ++_legacyVersion,
+          );
+  }
+
+  @override
+  void onAccountSessionChanged() {
+    _responseCookies = null;
+    headers.removeWhere((key, _) => key.toLowerCase() == 'cookie');
+  }
 
   void _logDebug(String msg) {
-    // 同时使用 print 和 CoreLog 确保日志输出
-    print("[Douyin] $msg");
     CoreLog.d("[Douyin] $msg");
   }
 
@@ -44,24 +55,22 @@ class DouyinSite implements LiveSite {
     "User-Agent": kDefaultUserAgent,
   };
 
-  Future<Map<String, dynamic>> getRequestHeaders() async {
-    try {
-      // 如果用户已设置 cookie，直接使用用户的 cookie
-      if (cookie.isNotEmpty) {
-        headers["cookie"] = cookie;
-        return headers;
-      }
-
-      // 使用默认的 ttwid cookie（只需要 ttwid 即可获取所有画质）
-      headers["cookie"] = kDefaultCookie;
-      return headers;
-    } catch (e) {
-      CoreLog.error(e);
-      if (!(headers["cookie"]?.toString().isNotEmpty ?? false)) {
-        headers["cookie"] = kDefaultCookie;
-      }
-      return headers;
-    }
+  Future<Map<String, dynamic>> getRequestHeaders({Uri? uri}) async {
+    final target = uri ?? Uri.parse(kDefaultReferer);
+    final session = accountSession;
+    final cookies =
+        session?.cookie ??
+        _responseCookies ??
+        PlatformCookie.parse(kDefaultCookie);
+    final scoped = LiveAccountSession(
+      platform: LiveAccountPlatform.douyin,
+      cookie: cookies,
+      version: session?.version ?? 0,
+    );
+    return accountRequestHeaders(session, {
+      ...headers.map((key, value) => MapEntry(key, value.toString())),
+      ...scoped.headersFor(target),
+    });
   }
 
   @override
@@ -255,11 +264,18 @@ class DouyinSite implements LiveSite {
   /// - [roomId] 直播间ID
   /// - 返回直播间信息
   Future<LiveRoomDetail> getRoomDetailByRoomId(String roomId) async {
+    final session = accountSession;
     // 读取房间信息
     var roomData = await _getRoomDataByRoomId(roomId);
 
     // 通过房间信息获取WebRid
     var webRid = roomData["data"]["room"]["owner"]["web_rid"].toString();
+    if (session != null && !session.cookie.isEmpty) {
+      if (accountSession?.version != session.version) {
+        throw StateError('账号已更新，请刷新房间信息');
+      }
+      return getRoomDetailByWebRid(webRid);
+    }
 
     // 读取用户唯一ID，用于弹幕连接
     // 似乎这个参数不是必须的，先随机生成一个
@@ -282,7 +298,11 @@ class DouyinSite implements LiveSite {
     // 主要是为了获取cookie,用于弹幕websocket连接
     var headers = await getRequestHeaders();
 
+    if (accountSession?.version != session?.version) {
+      throw StateError('账号已更新，请刷新房间信息');
+    }
     return LiveRoomDetail(
+      accountSessionVersion: session?.version ?? 0,
       roomId: webRid,
       title: room["title"].toString(),
       cover: roomStatus ? room["cover"]["url_list"][0].toString() : "",
@@ -322,6 +342,7 @@ class DouyinSite implements LiveSite {
   /// - [webRid] 直播间RID
   /// - 返回直播间信息
   Future<LiveRoomDetail> _getRoomDetailByWebRidApi(String webRid) async {
+    final session = accountSession;
     // 读取房间信息
     var data = await _getRoomDataByApi(webRid);
 
@@ -340,7 +361,11 @@ class DouyinSite implements LiveSite {
 
     // 主要是为了获取cookie,用于弹幕websocket连接
     var headers = await getRequestHeaders();
+    if (accountSession?.version != session?.version) {
+      throw StateError('账号已更新，请刷新房间信息');
+    }
     return LiveRoomDetail(
+      accountSessionVersion: session?.version ?? 0,
       roomId: webRid,
       title: roomData["title"].toString(),
       cover: roomStatus ? roomData["cover"]["url_list"][0].toString() : "",
@@ -371,6 +396,7 @@ class DouyinSite implements LiveSite {
   /// - [webRid] 直播间RID
   /// - 返回直播间信息
   Future<LiveRoomDetail> _getRoomDetailByWebRidHtml(String webRid) async {
+    final session = accountSession;
     var roomData = await _getRoomDataByHtml(webRid);
     var roomId = roomData["roomStore"]["roomInfo"]["room"]["id_str"].toString();
     var userUniqueId = roomData["userStore"]["odin"]["user_unique_id"]
@@ -384,7 +410,11 @@ class DouyinSite implements LiveSite {
     // 主要是为了获取cookie,用于弹幕websocket连接
     var headers = await getRequestHeaders();
 
+    if (accountSession?.version != session?.version) {
+      throw StateError('账号已更新，请刷新房间信息');
+    }
     return LiveRoomDetail(
+      accountSessionVersion: session?.version ?? 0,
       roomId: webRid,
       title: room["title"].toString(),
       cover: roomStatus ? room["cover"]["url_list"][0].toString() : "",
@@ -426,24 +456,25 @@ class DouyinSite implements LiveSite {
   /// 进入直播间前需要先获取cookie
   /// - [webRid] 直播间RID
   Future<String> _getWebCookie(String webRid) async {
-    var headResp = await HttpClient.instance.head(
-      "https://live.douyin.com/$webRid",
-      header: headers,
+    final session = accountSession;
+    final uri = Uri.parse('https://live.douyin.com/$webRid');
+    final requestHeaders = await getRequestHeaders(uri: uri);
+    final existing = PlatformCookie.parse(
+      requestHeaders['cookie']?.toString() ?? '',
     );
-    var dyCookie = "";
-    headResp.headers["set-cookie"]?.forEach((element) {
-      var cookie = element.split(";")[0];
-      if (cookie.contains("ttwid")) {
-        dyCookie += "$cookie;";
-      }
-      if (cookie.contains("__ac_nonce")) {
-        dyCookie += "$cookie;";
-      }
-      if (cookie.contains("msToken")) {
-        dyCookie += "$cookie;";
-      }
-    });
-    return dyCookie;
+    final response = await HttpClient.instance.head(
+      uri.toString(),
+      header: requestHeaders,
+    );
+    final merged = existing.mergeResponseCookies(
+      uri,
+      response.headers['set-cookie'] ?? const [],
+    );
+    if (accountSession?.version != session?.version) {
+      throw StateError('账号已更新，请刷新房间信息');
+    }
+    _responseCookies = merged;
+    return merged.header;
   }
 
   /// 通过webRid获取直播间Web信息
@@ -530,7 +561,9 @@ class DouyinSite implements LiveSite {
         "version_code": "99.99.99",
         "app_id": 6383,
       },
-      header: await getRequestHeaders(),
+      header: await getRequestHeaders(
+        uri: Uri.parse('https://webcast.amemv.com/webcast/room/reflow/info/'),
+      ),
     );
     return result;
   }
@@ -634,7 +667,16 @@ class DouyinSite implements LiveSite {
     required LivePlayQuality quality,
   }) async {
     // 返回列表的副本，防止外部 clear() 影响原始数据
-    return LivePlayUrl(urls: List<String>.from(quality.data));
+    final session = accountSession;
+    if (detail.accountSessionVersion != null &&
+        detail.accountSessionVersion != (session?.version ?? 0)) {
+      throw StateError('账号已更新，请刷新房间信息');
+    }
+    return LivePlayUrl(
+      urls: List<String>.from(quality.data),
+      accountSessionVersion: session?.version ?? 0,
+      fetchedAt: DateTime.now(),
+    );
   }
 
   @override
@@ -642,6 +684,7 @@ class DouyinSite implements LiveSite {
     String keyword, {
     int page = 1,
   }) async {
+    final session = accountSession;
     String serverUrl = "https://www.douyin.com/aweme/v1/web/live/search/";
     var uri = Uri.parse(serverUrl).replace(
       scheme: "https",
@@ -684,25 +727,13 @@ class DouyinSite implements LiveSite {
     );
     //var requlestUrl = await getAbogusUrl(uri.toString());
     var requlestUrl = uri.toString();
-    var headResp = await HttpClient.instance.head(
-      'https://live.douyin.com',
-      header: headers,
-    );
-    var dyCookie = "";
-    headResp.headers["set-cookie"]?.forEach((element) {
-      var cookie = element.split(";")[0];
-      if (cookie.contains("ttwid")) {
-        dyCookie += "$cookie;";
-      }
-      if (cookie.contains("__ac_nonce")) {
-        dyCookie += "$cookie;";
-      }
-    });
+    final requestHeaders = await getRequestHeaders(uri: Uri.parse(serverUrl));
+    final dyCookie = requestHeaders['cookie'] ?? '';
 
     var result = await HttpClient.instance.getJson(
       requlestUrl,
       queryParameters: {},
-      header: {
+      header: accountRequestHeaders(session, {
         "Authority": 'www.douyin.com',
         'accept': 'application/json, text/plain, */*',
         'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
@@ -718,7 +749,7 @@ class DouyinSite implements LiveSite {
         'sec-fetch-mode': 'cors',
         'sec-fetch-site': 'same-origin',
         'user-agent': kDefaultUserAgent,
-      },
+      }),
     );
     if (result == "" || result == 'blocked') {
       throw Exception("抖音直播搜索被限制，请稍后再试");

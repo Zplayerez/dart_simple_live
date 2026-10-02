@@ -3,166 +3,163 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:get/get.dart';
+import 'package:simple_live_account/simple_live_account.dart';
+import 'package:simple_live_account/widgets/account_labels.dart';
+import 'package:simple_live_account/widgets/account_pairing_page.dart';
 import 'package:simple_live_app/app/utils.dart';
+import 'package:simple_live_app/modules/mine/account/cookie_import_dialog.dart';
 import 'package:simple_live_app/routes/route_path.dart';
-import 'package:simple_live_app/services/bilibili_account_service.dart';
-import 'package:simple_live_app/services/douyin_account_service.dart';
-import 'package:simple_live_core/simple_live_core.dart';
+import 'package:simple_live_app/services/sync_service.dart';
+import 'package:simple_live_app/modules/mine/account/platform_web_login_page.dart';
+import 'package:simple_live_app/modules/mine/account/platform_web_login_policy.dart';
 
 class AccountController extends GetxController {
-  void bilibiliTap() async {
-    if (BiliBiliAccountService.instance.logined.value) {
-      var result = await Utils.showAlertDialog("确定要退出哔哩哔哩账号吗？", title: "退出登录");
-      if (result) {
-        BiliBiliAccountService.instance.logout();
-      }
-    } else {
-      //AppNavigator.toBiliBiliLogin();
-      bilibiliLogin();
-    }
-  }
+  PlatformAccountManager get accounts => PlatformAccountManager.instance;
 
-  void bilibiliLogin() {
+  void openPlatform(String siteId) {
     Utils.showBottomSheet(
-      title: "登录哔哩哔哩",
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Visibility(
-            visible: Platform.isAndroid || Platform.isIOS,
-            child: ListTile(
-              leading: const Icon(Icons.account_circle_outlined),
-              title: const Text("Web登录"),
-              subtitle: const Text("填写用户名密码登录"),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () {
-                Get.back();
-                Get.toNamed(RoutePath.kBiliBiliWebLogin);
-              },
+      title: '${accountPlatformName(siteId)}账号',
+      child: Obx(() {
+        final state = accounts.account(siteId);
+        final busy = state.status == LiveAccountStatus.verifying;
+        return ListView(
+          children: [
+            ListTile(
+              leading: state.status == LiveAccountStatus.verified &&
+                      (state.avatarUrl?.isNotEmpty ?? false)
+                  ? CircleAvatar(
+                      foregroundImage: NetworkImage(state.avatarUrl!),
+                      onForegroundImageError: (_, __) {},
+                      child: const Icon(Icons.person_outline),
+                    )
+                  : const Icon(Icons.account_circle_outlined),
+              title: Text(accountSummary(state)),
+              subtitle: Text(accountDetails(state)),
             ),
-          ),
-          ListTile(
-            leading: const Icon(Icons.qr_code),
-            title: const Text("扫码登录"),
-            subtitle: const Text("使用哔哩哔哩APP扫描二维码登录"),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () {
-              Get.back();
-              Get.toNamed(RoutePath.kBiliBiliQRLogin);
-            },
-          ),
-          ListTile(
-            leading: const Icon(Icons.edit_outlined),
-            title: const Text("Cookie登录"),
-            subtitle: const Text("手动输入Cookie登录"),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () {
-              Get.back();
-              doBiliBiliCookieLogin();
-            },
-          ),
-        ],
-      ),
-    );
-  }
-
-  void doBiliBiliCookieLogin() async {
-    var cookie = await Utils.showEditTextDialog(
-      "",
-      title: "请输入Cookie",
-      hintText: "请输入Cookie",
-    );
-    if (cookie == null || cookie.isEmpty) {
-      return;
-    }
-    BiliBiliAccountService.instance.setCookie(cookie);
-    await BiliBiliAccountService.instance.loadUserInfo();
-  }
-
-  void douyinTap() async {
-    if (DouyinAccountService.instance.hasCookie.value) {
-      var result = await Utils.showAlertDialog("确定要清除自定义 ttwid 吗？", title: "清除配置");
-      if (result) {
-        DouyinAccountService.instance.clearCookie();
-        SmartDialog.showToast("已清除自定义 ttwid，将使用默认 ttwid");
-      }
-    } else {
-      doDouyinCookieConfig();
-    }
-  }
-
-  void doDouyinCookieConfig() {
-    // 初始化文本框时，只显示 ttwid 的值部分
-    var savedCookie = DouyinAccountService.instance.cookie;
-    var displayText = savedCookie;
-    if (savedCookie.startsWith('ttwid=')) {
-      displayText = savedCookie.substring(6); // 去掉 "ttwid="
-    }
-    var controller = TextEditingController(text: displayText);
-
-    Get.dialog(
-      AlertDialog(
-        title: const Text("配置抖音 ttwid"),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                "默认已内置有效的 ttwid，可观看所有画质（包括蓝光）。\n如有需要可自定义配置。",
-                style: TextStyle(fontSize: 12, color: Colors.grey),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: controller,
-                maxLines: 3,
-                decoration: const InputDecoration(
-                  hintText: "请粘贴 ttwid 值（留空则使用默认值）",
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 8),
-              TextButton.icon(
-                onPressed: () {
-                  // 提取 ttwid 的值部分（去掉 "ttwid=" 前缀）
-                  var defaultValue = DouyinSite.kDefaultCookie;
-                  if (defaultValue.startsWith('ttwid=')) {
-                    defaultValue = defaultValue.substring(6); // 去掉 "ttwid="
-                  }
-                  controller.text = defaultValue;
+            if (busy) const LinearProgressIndicator(),
+            if (platformWebLoginSupported)
+              ListTile(
+                leading: const Icon(Icons.account_circle_outlined),
+                title: const Text('网页登录'),
+                subtitle: const Text('在平台官方页面完成登录'),
+                trailing: const Icon(Icons.chevron_right),
+                enabled: !busy,
+                onTap: () {
+                  Get.back();
+                  Get.to(() => PlatformWebLoginPage(siteId: siteId));
                 },
-                icon: const Icon(Icons.restore),
-                label: const Text("恢复默认 ttwid"),
+              ),
+            if (siteId == 'bilibili') ...[
+              ListTile(
+                leading: const Icon(Icons.qr_code),
+                title: const Text('扫码登录'),
+                subtitle: const Text('使用哔哩哔哩 App 扫描二维码'),
+                trailing: const Icon(Icons.chevron_right),
+                enabled: !busy,
+                onTap: () {
+                  Get.back();
+                  Get.toNamed(RoutePath.kBiliBiliQRLogin);
+                },
               ),
             ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Get.back(),
-            child: const Text("取消"),
-          ),
-          TextButton(
-            onPressed: () {
-              var input = controller.text.trim();
-              Get.back();
-              if (input.isEmpty) {
-                DouyinAccountService.instance.clearCookie();
-                SmartDialog.showToast("已清除自定义 Cookie，将使用默认 ttwid");
-              } else {
-                // 如果用户只输入了 ttwid 值，自动添加 "ttwid=" 前缀
-                var cookie = input;
-                if (!input.startsWith('ttwid=')) {
-                  cookie = 'ttwid=$input';
-                }
-                DouyinAccountService.instance.setCookie(cookie);
-                SmartDialog.showToast("ttwid 已保存");
-              }
-            },
-            child: const Text("确定"),
-          ),
-        ],
-      ),
+            ListTile(
+              leading: const Icon(Icons.edit_outlined),
+              title: Text(state.hasCredential ? '更新 Cookie' : '导入 Cookie'),
+              subtitle: const Text('导入完整 Cookie，保存后尝试验证账号状态'),
+              trailing: const Icon(Icons.chevron_right),
+              enabled: !busy,
+              onTap: () => importCookie(siteId),
+            ),
+            if (state.hasCredential) ...[
+              ListTile(
+                leading: const Icon(Icons.refresh),
+                title: const Text('重新验证'),
+                enabled: !busy,
+                onTap: () => verify(siteId),
+              ),
+            ],
+            if (state.hasCredential || state.storageMessage != null)
+              ListTile(
+                leading: const Icon(Icons.logout),
+                title: Text(state.hasCredential ? '退出并清除凭据' : '重试清除本机凭据'),
+                enabled: !busy,
+                onTap: () => logout(siteId),
+              ),
+            ListTile(
+              leading: const Icon(Icons.devices),
+              title: const Text('从其他设备接收账号'),
+              subtitle: const Text('同一局域网内配对，确认后加密传入'),
+              enabled: !busy,
+              onTap: () => receiveAccount(siteId),
+            ),
+            if (state.hasCredential)
+              ListTile(
+                leading: const Icon(Icons.send_outlined),
+                title: const Text('发送到另一台设备'),
+                subtitle: const Text('扫描或粘贴接收设备的配对信息'),
+                enabled: !busy,
+                onTap: () => sendAccount(siteId),
+              ),
+          ],
+        );
+      }),
     );
+  }
+
+  void receiveAccount(String siteId) {
+    Get.back();
+    Get.to(() => AccountReceivePage(
+          siteId: siteId,
+          onStart: (confirm, onStatus) => SyncService.instance
+              .startAccountPairing(siteId, confirm, onStatus),
+          onCancel: () => SyncService.instance.cancelAccountPairing(),
+        ));
+  }
+
+  void sendAccount(String siteId) {
+    Get.back();
+    Get.to(() => AccountSendPage(
+          siteId: siteId,
+          scan: Platform.isAndroid || Platform.isIOS
+              ? () async => await Get.toNamed<String>(RoutePath.kSyncScan)
+              : null,
+        ));
+  }
+
+  Future<void> importCookie(String siteId) async {
+    final cookie = await Get.dialog<String>(CookieImportDialog(siteId: siteId));
+    if (cookie == null || cookie.trim().isEmpty) return;
+    try {
+      final state = await accounts.importCookie(siteId, cookie);
+      SmartDialog.showToast(accountResultMessage(state));
+    } on FormatException {
+      SmartDialog.showToast('Cookie 格式无效，请输入完整的名称=值形式');
+    } catch (_) {
+      SmartDialog.showToast('未能导入 Cookie，请重试');
+    }
+  }
+
+  Future<void> verify(String siteId) async {
+    try {
+      final state = await accounts.verify(siteId);
+      SmartDialog.showToast(accountResultMessage(state));
+    } catch (_) {
+      SmartDialog.showToast('暂时无法验证，请稍后重试');
+    }
+  }
+
+  Future<void> logout(String siteId) async {
+    final confirmed = await Utils.showAlertDialog(
+      '确定要退出${accountPlatformName(siteId)}并清除本机凭据吗？',
+      title: '退出账号',
+    );
+    if (!confirmed) return;
+    try {
+      final state = await accounts.logout(siteId);
+      SmartDialog.showToast(
+          state.storageMessage ?? '已清除${accountPlatformName(siteId)}账号凭据');
+    } catch (_) {
+      SmartDialog.showToast('清除凭据未完成，请重试');
+    }
   }
 }

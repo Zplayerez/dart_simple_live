@@ -2,9 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:simple_live_tv_app/app/app_focus_node.dart';
 import 'package:simple_live_tv_app/app/controller/base_controller.dart';
-import 'package:simple_live_tv_app/app/utils.dart';
-import 'package:simple_live_tv_app/routes/app_navigation.dart';
-import 'package:simple_live_tv_app/services/bilibili_account_service.dart';
+import 'package:simple_live_tv_app/modules/account/account_page.dart';
 
 class SettingsController extends BaseController
     with GetTickerProviderStateMixin {
@@ -53,15 +51,47 @@ class SettingsController extends BaseController
 
   var bilibiliFoucsNode = AppFocusNode();
   var versionFocusNode = AppFocusNode();
-  void bilibiliTap() async {
-    if (BiliBiliAccountService.instance.logined.value) {
-      var result = await Utils.showAlertDialog("确定要退出哔哩哔哩账号吗？", title: "退出登录");
-      if (result) {
-        BiliBiliAccountService.instance.logout();
-      }
-    } else {
-      AppNavigator.toBiliBiliLogin();
-    }
+  final douyuFocusNode = AppFocusNode();
+  final huyaFocusNode = AppFocusNode();
+  final douyinFocusNode = AppFocusNode();
+
+  AppFocusNode accountFocusNode(String siteId) => switch (siteId) {
+        'douyu' => douyuFocusNode,
+        'huya' => huyaFocusNode,
+        'douyin' => douyinFocusNode,
+        _ => bilibiliFoucsNode,
+      };
+
+  Future<void> openAccount(String siteId) async {
+    await Get.to(() => AccountPage(siteId: siteId));
+    if (!isClosed) accountFocusNode(siteId).requestFocus();
   }
 
+  @override
+  void onClose() {
+    tabController.dispose();
+    for (final node in [
+      hardwareDecodeFocusNode,
+      compatibleModeFocusNode,
+      scaleFoucsNode,
+      defaultQualityFocusNode,
+      danmakuFoucsNode,
+      danmakuSizeFoucsNode,
+      danmakuSpeedFoucsNode,
+      danmakuAreaFoucsNode,
+      danmakuOpacityFoucsNode,
+      danmakuStorkeFoucsNode,
+      autoUpdateFollowEnableFocusNode,
+      autoUpdateFollowDurationFocusNode,
+      updateFollowThreadFocusNode,
+      bilibiliFoucsNode,
+      douyuFocusNode,
+      huyaFocusNode,
+      douyinFocusNode,
+      versionFocusNode,
+    ]) {
+      node.dispose();
+    }
+    super.onClose();
+  }
 }

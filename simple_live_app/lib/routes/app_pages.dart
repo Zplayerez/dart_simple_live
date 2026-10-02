@@ -27,8 +27,7 @@ import 'package:simple_live_app/modules/mine/account/account_controller.dart';
 import 'package:simple_live_app/modules/mine/account/account_page.dart';
 import 'package:simple_live_app/modules/mine/account/bilibili/qr_login_controller.dart';
 import 'package:simple_live_app/modules/mine/account/bilibili/qr_login_page.dart';
-import 'package:simple_live_app/modules/mine/account/bilibili/web_login_controller.dart';
-import 'package:simple_live_app/modules/mine/account/bilibili/web_login_page.dart';
+import 'package:simple_live_app/modules/mine/account/platform_web_login_page.dart';
 import 'package:simple_live_app/modules/settings/appstyle_setting_page.dart';
 import 'package:simple_live_app/modules/settings/auto_exit_settings_page.dart';
 import 'package:simple_live_app/modules/settings/danmu_settings_page.dart';
@@ -159,10 +158,7 @@ class AppPages {
     //哔哩哔哩Web登录
     GetPage(
       name: RoutePath.kBiliBiliWebLogin,
-      page: () => const BiliBiliWebLoginPage(),
-      bindings: [
-        BindingsBuilder.put(() => BiliBiliWebLoginController()),
-      ],
+      page: () => const PlatformWebLoginPage(siteId: 'bilibili'),
     ),
     //哔哩哔哩二维码登录
     GetPage(
