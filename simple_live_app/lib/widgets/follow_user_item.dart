@@ -14,12 +14,16 @@ class FollowUserItem extends StatelessWidget {
   final Function()? onTap;
   final Function()? onLongPress;
   final bool playing;
+  final bool pinned;
+  final VoidCallback? onPin;
   const FollowUserItem({
     required this.item,
     this.onRemove,
     this.onTap,
     this.onLongPress,
     this.playing = false,
+    this.pinned = false,
+    this.onPin,
     Key? key,
   }) : super(key: key);
 
@@ -42,7 +46,7 @@ class FollowUserItem extends StatelessWidget {
               alignment: ui.PlaceholderAlignment.middle,
               child: Obx(
                 () => Offstage(
-                  offstage: item.liveStatus.value == 0,
+                  offstage: false,
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
@@ -59,7 +63,9 @@ class FollowUserItem extends StatelessWidget {
                       ),
                       AppStyle.hGap4,
                       Text(
-                        getStatus(item.liveStatus.value),
+                        item.checking.value
+                            ? '更新中'
+                            : getStatus(item.liveStatus.value),
                         style: TextStyle(
                           fontSize: 12,
                           fontWeight: FontWeight.normal,
@@ -125,22 +131,30 @@ class FollowUserItem extends StatelessWidget {
                 ),
               ),
             )
-          : (onRemove == null
-              ? null
-              : IconButton(
+          : Row(mainAxisSize: MainAxisSize.min, children: [
+              if (onPin != null)
+                IconButton(
+                    onPressed: onPin,
+                    tooltip: pinned ? '取消置顶' : '置顶常看主播',
+                    icon: Icon(
+                        pinned ? Icons.push_pin : Icons.push_pin_outlined)),
+              if (onRemove != null)
+                IconButton(
                   onPressed: () {
                     onRemove?.call();
                   },
                   icon: const Icon(Remix.dislike_line),
-                )),
+                ),
+            ]),
       onTap: onTap,
       onLongPress: onLongPress,
     );
   }
 
   String getStatus(int status) {
+    if (status == -1) return "暂时无法确认";
     if (status == 0) {
-      return "读取中";
+      return "尚未更新";
     } else if (status == 1) {
       return "未开播";
     } else {

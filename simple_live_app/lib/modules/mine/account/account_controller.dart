@@ -21,7 +21,7 @@ class AccountController extends GetxController {
       title: '${accountPlatformName(siteId)}账号',
       child: Obx(() {
         final state = accounts.account(siteId);
-        final busy = state.status == LiveAccountStatus.verifying;
+        final busy = accounts.isBusy(siteId);
         return ListView(
           children: [
             ListTile(
@@ -37,10 +37,18 @@ class AccountController extends GetxController {
               subtitle: Text(accountDetails(state)),
             ),
             if (busy) const LinearProgressIndicator(),
+            ListTile(
+              dense: true,
+              title: Text(accounts.cleaningAccounts.contains(siteId)
+                  ? '正在清理登录信息，请稍候…'
+                  : accountNextStep(state)),
+            ),
             if (platformWebLoginSupported)
               ListTile(
                 leading: const Icon(Icons.account_circle_outlined),
-                title: const Text('网页登录'),
+                title: Text(state.status == LiveAccountStatus.expired
+                    ? '重新登录'
+                    : '网页登录'),
                 subtitle: const Text('在平台官方页面完成登录'),
                 trailing: const Icon(Icons.chevron_right),
                 enabled: !busy,

@@ -60,45 +60,66 @@ class BasePageController<T> extends BaseController {
   int pageSize = 24;
   var canLoadMore = false.obs;
   var list = <T>[].obs;
+  int requestGeneration = 0;
+
+  /// Invalidate old keyword/page requests even when a new tab loads lazily.
+  void resetData() {
+    requestGeneration++;
+    loadding = false;
+    pageLoadding.value = false;
+    pageError.value = false;
+    pageEmpty.value = false;
+    canLoadMore.value = false;
+    errorMsg.value = '';
+    currentPage = 1;
+    list.clear();
+  }
 
   Future refreshData() async {
-    currentPage = 1;
-    list.value = [];
+    resetData();
     await loadData();
   }
 
+  bool hasMoreForPage(List<T> result) => result.isNotEmpty;
+
+  @override
+  void onClose() {
+    requestGeneration++;
+    scrollController.dispose();
+    easyRefreshController.dispose();
+    super.onClose();
+  }
+
   Future loadData() async {
+    if (loadding || isClosed || (currentPage > 1 && !canLoadMore.value)) return;
+    final generation = requestGeneration;
+    final page = currentPage;
+    loadding = true;
     try {
-      if (loadding) return;
-      loadding = true;
       pageError.value = false;
       pageEmpty.value = false;
       notLogin.value = false;
       pageLoadding.value = currentPage == 1;
 
-      var result = await getData(currentPage, pageSize);
-      //是否可以加载更多
-      if (result.isNotEmpty) {
-        currentPage++;
-        canLoadMore.value = true;
-        pageEmpty.value = false;
-      } else {
-        canLoadMore.value = false;
-        if (currentPage == 1) {
-          pageEmpty.value = true;
-        }
-      }
-      // 赋值数据
-      if (currentPage == 1) {
+      var result = await getData(page, pageSize);
+      if (isClosed || generation != requestGeneration) return;
+      canLoadMore.value = hasMoreForPage(result);
+      pageEmpty.value = page == 1 && result.isEmpty;
+      currentPage = page + 1;
+      if (page == 1) {
         list.value = result;
       } else {
         list.addAll(result);
       }
     } catch (e) {
-      handleError(e, showPageError: currentPage == 1);
+      if (!isClosed && generation == requestGeneration) {
+        handleError(e, showPageError: page == 1);
+      }
     } finally {
-      loadding = false;
-      pageLoadding.value = false;
+      if (!isClosed && generation == requestGeneration) {
+        loadding = false;
+        pageLoadding.value = false;
+      }
     }
   }
 
@@ -107,7 +128,7 @@ class BasePageController<T> extends BaseController {
   }
 
   void scrollToTopOrRefresh() {
-    if (scrollController.offset > 0) {
+    if (scrollController.hasClients && scrollController.offset > 0) {
       scrollController.animateTo(
         0,
         duration: const Duration(milliseconds: 200),

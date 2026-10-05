@@ -244,13 +244,12 @@ class PlatformAccountValidator {
     }
     if (session.platform != LiveAccountPlatform.bilibili) {
       final message = switch (session.platform) {
-        LiveAccountPlatform.douyu => 'Cookie 已配置；身份尚未验证，可在直播间检查实际画质与播放有效期',
-        LiveAccountPlatform.huya =>
-          'Cookie 已用于 HTTPS 房间页面；身份与登录播放权益尚未验证，游客 TARS 请求不携带凭据',
+        LiveAccountPlatform.douyu => '登录信息已保存并用于获取播放地址；身份与可用画质尚未确认',
+        LiveAccountPlatform.huya => '登录信息已保存；当前播放线路尚未验证账号画质权限',
         LiveAccountPlatform.douyin =>
           session.cookie.hasAccountSessionFor(LiveAccountPlatform.douyin)
-              ? '完整 Cookie 已配置；账号身份与播放权益尚未验证'
-              : '已配置游客设备 Cookie，ttwid 不代表账号登录',
+              ? '登录信息已保存；账号身份与可用画质尚未确认'
+              : '仅保存了游客设备信息，请通过网页登录获取账号权限',
         _ => '',
       };
       return LiveAccountValidation(

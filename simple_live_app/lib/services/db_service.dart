@@ -19,6 +19,29 @@ class DBService extends GetxService {
       Hive.openBox<FollowUser>("FollowUser").then((box) => followBox = box),
       Hive.openBox<FollowUserTag>("FollowUserTag").then((box) => tagBox = box),
     ]);
+    await _repairFollowTags();
+  }
+
+  /// Repair older releases that stored reordered tags under numeric Hive keys.
+  /// Write canonical records before removing aliases, retaining memberships.
+  Future<void> _repairFollowTags() async {
+    final entries = {for (final key in tagBox.keys) key: tagBox.get(key)!};
+    final byName = <String, FollowUserTag>{};
+    for (final tag in entries.values) {
+      final existing = byName[tag.tag];
+      if (existing == null) {
+        byName[tag.tag] = tag;
+      } else {
+        existing.userId = {...existing.userId, ...tag.userId}.toList();
+      }
+    }
+    final canonical = {for (final tag in byName.values) tag.id: tag};
+    if (entries.entries.any((entry) => entry.key != entry.value.id) ||
+        canonical.length != entries.length) {
+      await tagBox.putAll(canonical);
+      await tagBox
+          .deleteAll(entries.keys.where((key) => !canonical.containsKey(key)));
+    }
   }
 
   // follow_user_tag 相关逻辑
@@ -42,7 +65,9 @@ class DBService extends GetxService {
 
   // 获取标签列表
   List<FollowUserTag> getFollowTagList() {
-    return tagBox.values.toList();
+    final tags = tagBox.values.toList();
+    // Stable tie order keeps old records (without an order field) unchanged.
+    return tags.sortedBy<num>((tag) => tag.order);
   }
 
   // 修改标签
@@ -52,22 +77,29 @@ class DBService extends GetxService {
 
   // 添加标签
   Future<FollowUserTag> addFollowTag(String tag) async {
-    // 限制标签唯一且长度不超过8个字符
-    if (getFollowTagExistByTag(tag) && tag.length > 8) {
+    tag = tag.trim();
+    if (tag.isEmpty) throw const FormatException('标签名称不能为空');
+    if (getFollowTagExistByTag(tag)) {
       return getFollowTag(tag)!;
     }
     final String uniqueId = uuid.v4();
-    final followUserTag = FollowUserTag(id: uniqueId, tag: tag, userId: []);
+    final order =
+        tagBox.values.fold<int>(-1, (n, tag) => tag.order > n ? tag.order : n) +
+            1;
+    final followUserTag =
+        FollowUserTag(id: uniqueId, tag: tag, userId: [], order: order);
     await tagBox.put(uniqueId, followUserTag);
     return followUserTag;
   }
 
   // 调整标签顺序
   Future updateFollowTagOrder(List<FollowUserTag> userTagList) async {
-    final Map<int, FollowUserTag> updatedMap = {
-      for (int i = 0; i < userTagList.length; i++) i: userTagList[i]
-    };
-    await tagBox.clear();
+    final updatedMap = <String, FollowUserTag>{};
+    for (var i = 0; i < userTagList.length; i++) {
+      final tag = userTagList[i];
+      tag.order = i;
+      updatedMap[tag.id] = tag;
+    }
     await tagBox.putAll(updatedMap);
   }
 

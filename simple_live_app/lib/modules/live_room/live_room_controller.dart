@@ -23,6 +23,8 @@ import 'package:simple_live_app/models/db/history.dart';
 import 'package:simple_live_app/modules/live_room/player/player_controller.dart';
 import 'package:simple_live_app/modules/settings/danmu_settings_page.dart';
 import 'package:simple_live_app/services/db_service.dart';
+import 'package:simple_live_app/services/playback_preferences.dart';
+import 'package:simple_live_app/modules/mine/account/account_controller.dart';
 import 'package:simple_live_app/services/follow_service.dart';
 import 'package:simple_live_app/widgets/desktop_refresh_button.dart';
 import 'package:simple_live_app/widgets/follow_user_item.dart';
@@ -80,10 +82,10 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   Timer? _playUrlRefreshTimer;
   Timer? _healthyPlaybackTimer;
   LivePlayUrl? _activePlayUrl;
-  LivePlayUrl? _preloadedPlayUrl;
+  PlaybackSource? _preloadedPlayUrl;
   DateTime? _preloadedAt;
   String? _preloadedContext;
-  Future<LivePlayUrl?>? _pendingPlayUrl;
+  Future<PlaybackSource?>? _pendingPlayUrl;
   String? _pendingPlayContext;
   int _playGeneration = 0;
   final _playerCommands = PlaybackCommandQueue();
@@ -102,7 +104,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       PlatformAccountManager.instance.account(site.id).revision;
   String get _roomContext =>
       '${site.id}/$roomId/$_accountRevision/$_playGeneration';
-  String get _playContext => '$_roomContext/$currentQuality';
+  String get _playContext => _roomContext;
 
   void _watchAccount() {
     _knownAccountRevision = _accountRevision;
@@ -119,6 +121,39 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   /// 当前线路
   var currentLineIndex = -1;
   var currentLineInfo = "".obs;
+  final recoveryMessage = ''.obs;
+  final qualityNotice = ''.obs;
+  final smoothPlayback = false.obs;
+  String? _preferredLine;
+  String? _preferredQuality;
+  StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
+
+  String? get _lineIdentity =>
+      currentLineIndex >= 0 && currentLineIndex < playUrls.length
+          ? _activePlayUrl?.identityForUrl(playUrls[currentLineIndex])
+          : null;
+
+  void openAccount() => AccountController().openPlatform(site.id);
+
+  Future<void> selectQuality(int index, {bool remember = true}) async {
+    if (index < 0 || index >= qualites.length) return;
+    final context = _playContext;
+    if (remember) {
+      _preferredQuality = qualites[index].quality;
+      await PlaybackPreferences.save(
+          site.id, roomId, {'quality': _preferredQuality});
+      if (_inactive || context != _playContext) return;
+      qualityNotice.value = '';
+    }
+    currentQuality = index;
+    await getPlayUrl();
+  }
+
+  Future<void> restorePreferredQuality() async {
+    if (qualites.isEmpty) return;
+    final index = PlaybackSource.qualityIndexFor(qualites, _preferredQuality);
+    await selectQuality(index);
+  }
 
   /// 退出倒计时
   var countdown = 60.obs;
@@ -143,7 +178,8 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
   /// 直播间加载失败
   var loadError = false.obs;
-  Error? error;
+  Object? error;
+  StackTrace? loadErrorTrace;
 
   // 开播时长状态变量
   var liveDuration = "00:00:00".obs;
@@ -152,6 +188,16 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   @override
   void onInit() {
     _watchAccount();
+    _connectivitySubscription =
+        Connectivity().onConnectivityChanged.listen((results) {
+      if (results.any((result) => result != ConnectivityResult.none) &&
+          errorMsg.value.isNotEmpty &&
+          liveStatus.value &&
+          !_inactive) {
+        mediaErrorRetryCount = 0;
+        unawaited(_handleMediaFailure());
+      }
+    });
     WidgetsBinding.instance.addObserver(this);
     if (FollowService.instance.followList.isEmpty) {
       FollowService.instance.loadData();
@@ -330,6 +376,8 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     try {
       SmartDialog.showLoading(msg: "");
       loadError.value = false;
+      errorMsg.value = '';
+      recoveryMessage.value = '';
       error = null;
       update();
       addSysMsg("正在读取直播间信息");
@@ -341,7 +389,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
         // 1.6.0之前收藏的WebRid
         // 1.6.0收藏的RoomID
         // 1.6.0之后改回WebRid
-        if (detail.value!.roomId != roomId) {
+        if (detail.value!.roomId != roomId && !roomId.startsWith('user:')) {
           var oldId = roomId;
           rxRoomId.value = detail.value!.roomId;
           if (followed.value) {
@@ -375,17 +423,20 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       if (detail.value!.isRecord) {
         addSysMsg("当前主播未开播，正在轮播录像");
       }
-      addSysMsg("开始连接弹幕服务器");
-      initDanmau();
-      liveDanmaku.start(detail.value?.danmakuData);
-      startLiveDurationTimer(); // 启动开播时长定时器
-      if (liveStatus.value) await getPlayQualites();
-    } catch (e) {
+      if (liveStatus.value) {
+        addSysMsg("开始连接弹幕服务器");
+        initDanmau();
+        liveDanmaku.start(detail.value?.danmakuData);
+        startLiveDurationTimer();
+        await getPlayQualites();
+      }
+    } catch (e, stackTrace) {
       if (_inactive || context != _roomContext) return;
       Log.logPrint(e);
       //SmartDialog.showToast(e.toString());
       loadError.value = true;
-      error = e is Error ? e : null;
+      error = e;
+      loadErrorTrace = stackTrace;
     } finally {
       if (identical(_roomLoad, load)) _roomLoad = null;
       SmartDialog.dismiss(status: SmartStatus.loading);
@@ -423,6 +474,15 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
         currentQuality = middle;
       }
 
+      final preferences = PlaybackPreferences.read(site.id, roomId);
+      smoothPlayback.value = preferences['smooth'] == true;
+      _preferredLine = preferences['line'] as String?;
+      _preferredQuality = preferences['quality'] as String?;
+      currentQuality = PlaybackSource.qualityIndexFor(
+          playQualites, _preferredQuality,
+          fallback: currentQuality);
+      _preferredQuality ??= playQualites[currentQuality].quality;
+      qualityNotice.value = '';
       await getPlayUrl();
     } catch (e) {
       if (_inactive || context != _roomContext) return;
@@ -457,7 +517,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     final context = _playContext;
     if (!await _refreshPlayUrl()) {
       if (_inactive || context != _playContext) return;
-      SmartDialog.showToast("无法读取播放地址");
+      errorMsg.value = '暂时无法获取播放地址，请重试或检查账号状态';
       return;
     }
     if (_inactive || context != _playContext) return;
@@ -510,7 +570,8 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   }
 
   bool _consumePreloadedPlayUrl() {
-    final sources = _preloadedPlayUrl;
+    final snapshot = _preloadedPlayUrl;
+    final sources = snapshot?.urls;
     final received = _preloadedAt;
     final context = _preloadedContext;
     _preloadedPlayUrl = null;
@@ -522,65 +583,85 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
         sources.urls.isEmpty) {
       return false;
     }
-    final line = currentLineIndex >= 0 && currentLineIndex < sources.urls.length
-        ? currentLineIndex
-        : 0;
+    final line = sources.indexForIdentity(_lineIdentity ?? _preferredLine);
     if (!PlaybackRefreshPolicy.canUsePrefetched(
         sources.infoForUrl(sources.urls[line]), received)) {
       return false;
     }
-    _applyPlayUrl(sources);
+    _applyPlayUrl(snapshot!);
     return true;
   }
 
-  void _applyPlayUrl(LivePlayUrl sources) {
-    final oldLineIndex = currentLineIndex;
+  void _applyPlayUrl(PlaybackSource snapshot) {
+    final identity = _lineIdentity ?? _preferredLine;
+    final sources = snapshot.urls;
     _activePlayUrl = sources;
-    playUrls.value = sources.urls;
+    detail.value = snapshot.detail;
+    online.value = snapshot.detail.online;
+    qualites.assignAll(snapshot.qualities);
+    currentQuality = snapshot.qualityIndex;
+    playUrls.value = List.of(sources.urls);
     playHeaders = sources.headers;
-    currentLineIndex =
-        oldLineIndex >= 0 && oldLineIndex < playUrls.length ? oldLineIndex : 0;
+    currentLineIndex = sources.indexForIdentity(identity);
     _updateSourceInfo();
   }
 
   void _updateSourceInfo() {
     if (currentLineIndex < 0 || currentLineIndex >= playUrls.length) return;
-    currentLineInfo.value = '线路${currentLineIndex + 1}';
+    final info = _activePlayUrl?.infoForUrl(playUrls[currentLineIndex]);
+    currentLineInfo.value = info?.cdn?.isNotEmpty == true
+        ? info!.cdn!
+        : '线路${currentLineIndex + 1}';
     final requested = currentQuality >= 0 && currentQuality < qualites.length
         ? qualites[currentQuality].quality
         : '';
-    currentQualityInfo.value = _activePlayUrl
-            ?.infoForUrl(playUrls[currentLineIndex])
-            .displayedQuality(requested) ??
-        requested;
+    currentQualityInfo.value = info?.displayedQuality(requested) ?? requested;
+    if (info?.limitationReason?.isNotEmpty == true) {
+      qualityNotice.value = info!.limitationReason!;
+    } else if (info?.actualQuality != null &&
+        info!.actualQuality != requested) {
+      qualityNotice.value = '平台返回了${info.actualQuality}，请求画质为$requested';
+    } else if (_preferredQuality != null && requested != _preferredQuality) {
+      qualityNotice.value = '当前使用$requested，偏好画质为$_preferredQuality';
+    } else {
+      qualityNotice.value = '';
+    }
   }
 
-  Future<LivePlayUrl?> _fetchPlayUrl(
+  Future<PlaybackSource?> _fetchPlayUrl(
       String context, bool refreshRoomDetail) async {
     final requestedSite = site.liveSite;
-    final requestedRoom = roomId;
     final selectedQuality = qualites[currentQuality];
-    var requestedDetail = detail.value!;
     try {
-      if (refreshRoomDetail && site.id == Constant.kDouyu) {
-        requestedDetail =
-            await requestedSite.getRoomDetail(roomId: requestedRoom);
-        if (_inactive || context != _playContext) return null;
-        if (!requestedDetail.status && !requestedDetail.isRecord) return null;
+      final PlaybackSource? snapshot;
+      if (refreshRoomDetail) {
+        snapshot = await PlaybackSource.refresh(
+            requestedSite, roomId, selectedQuality,
+            allowQualityFallback: smoothPlayback.value);
+      } else {
+        final requestedDetail = detail.value!;
+        final qualities = List<LivePlayQuality>.of(qualites);
+        final index = currentQuality;
+        final urls = await requestedSite.getPlayUrls(
+            detail: requestedDetail, quality: selectedQuality);
+        snapshot = PlaybackSource(
+            detail: requestedDetail,
+            qualities: qualities,
+            qualityIndex: index,
+            urls: urls);
       }
-      final sources = await requestedSite.getPlayUrls(
-          detail: requestedDetail, quality: selectedQuality);
-      if (_inactive || context != _playContext || sources.urls.isEmpty) {
+      if (snapshot == null ||
+          _inactive ||
+          context != _playContext ||
+          snapshot.urls.urls.isEmpty) {
         return null;
       }
-      if (sources.accountSessionVersion != null &&
-          sources.accountSessionVersion !=
+      if (snapshot.urls.accountSessionVersion != null &&
+          snapshot.urls.accountSessionVersion !=
               (requestedSite.accountSession?.version ?? 0)) {
         return null;
       }
-      detail.value = requestedDetail;
-      online.value = requestedDetail.online;
-      return sources;
+      return snapshot;
     } catch (e) {
       Log.logPrint(e);
       return null;
@@ -597,7 +678,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       return false;
     }
     final context = _playContext;
-    final Future<LivePlayUrl?> request;
+    final Future<PlaybackSource?> request;
     if (_pendingPlayContext == context && _pendingPlayUrl != null) {
       request = _pendingPlayUrl!;
     } else {
@@ -640,9 +721,11 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
           !player.state.buffering &&
           !player.state.completed) {
         final now = DateTime.now();
+        recoveryMessage.value = '';
         healthySince ??= now;
         if (now.difference(healthySince!) >= const Duration(seconds: 10)) {
           mediaErrorRetryCount = 0;
+          recoveryMessage.value = '';
           timer.cancel();
         }
       } else {
@@ -671,6 +754,9 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       return;
     }
     if (_inactive || context != _playContext) return;
+    await PlaybackPreferences.save(site.id, roomId, {'line': _lineIdentity});
+    if (_inactive || context != _playContext) return;
+    _preferredLine = _lineIdentity;
     await setPlayer();
   }
 
@@ -755,15 +841,17 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     }
     final context = _playContext;
     _failureContext = context;
+    errorMsg.value = '';
+    recoveryMessage.value = '播放中断，正在恢复…';
     _healthyPlaybackTimer?.cancel();
     try {
-      final maxAttempts = playUrls.length > 1 ? 3 : 2;
+      final maxAttempts = (playUrls.length + 1).clamp(2, 5);
       while (mediaErrorRetryCount < maxAttempts) {
         if (mediaErrorRetryCount > 0) {
           await Future<void>.delayed(const Duration(seconds: 1));
         }
         if (_inactive || context != _playContext) return;
-        if (mediaErrorRetryCount == 2 && playUrls.length > 1) {
+        if (mediaErrorRetryCount > 0 && playUrls.length > 1) {
           currentLineIndex = (currentLineIndex + 1) % playUrls.length;
         }
         mediaErrorRetryCount++;
@@ -781,9 +869,18 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       if (status == false) {
         liveStatus.value = false;
         _stopPlayUrlRefreshTimer();
+      } else if (status == true &&
+          smoothPlayback.value &&
+          currentQuality + 1 < qualites.length) {
+        recoveryMessage.value = '线路恢复失败，正在尝试较低画质…';
+        await selectQuality(currentQuality + 1, remember: false);
+        return;
       } else {
-        errorMsg.value = '播放中断，请刷新重试';
+        errorMsg.value = status == null
+            ? '网络异常，暂时无法确认直播状态；连接恢复后将重试'
+            : '直播仍在进行，线路暂时不可用，请重试或切换画质';
       }
+      recoveryMessage.value = '';
     } catch (e) {
       if (!_inactive && context == _playContext) {
         errorMsg.value = '播放中断，请刷新重试';
@@ -791,6 +888,9 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       Log.logPrint(e);
     } finally {
       if (_failureContext == context) _failureContext = null;
+      if (!_inactive && context == _playContext && errorMsg.value.isNotEmpty) {
+        recoveryMessage.value = '';
+      }
     }
   }
 
@@ -1000,25 +1100,41 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
   void showQualitySheet() {
     Utils.showBottomSheet(
-      title: "切换清晰度",
-      child: RadioGroup(
-        groupValue: currentQuality,
-        onChanged: (e) {
-          Get.back();
-          currentQuality = e ?? 0;
-          getPlayUrl();
-        },
-        child: ListView.builder(
-          itemCount: qualites.length,
-          itemBuilder: (_, i) {
-            var item = qualites[i];
-            return RadioListTile(
-              value: i,
-              title: Text(item.quality),
-            );
-          },
-        ),
-      ),
+      title: '画质与播放策略',
+      child: Obx(() => ListView(children: [
+            ListTile(
+                title: Text('当前播放：${currentQualityInfo.value}'),
+                subtitle: Text(qualityNotice.value.isEmpty
+                    ? '画质选择会记住在此直播间'
+                    : qualityNotice.value),
+                trailing: qualityNotice.value.isEmpty
+                    ? null
+                    : TextButton(
+                        onPressed: () {
+                          Get.back();
+                          restorePreferredQuality();
+                        },
+                        child: const Text('恢复偏好'))),
+            SwitchListTile(
+                title: Text(smoothPlayback.value ? '流畅优先' : '画质优先'),
+                subtitle: const Text('开启后，同画质线路多次失败时允许自动降低画质'),
+                value: smoothPlayback.value,
+                onChanged: (value) {
+                  smoothPlayback.value = value;
+                  PlaybackPreferences.save(site.id, roomId, {'smooth': value});
+                }),
+            RadioGroup<int>(
+                groupValue: currentQuality,
+                onChanged: (value) {
+                  Get.back();
+                  selectQuality(value ?? 0);
+                },
+                child: Column(children: [
+                  for (var i = 0; i < qualites.length; i++)
+                    RadioListTile<int>(
+                        value: i, title: Text(qualites[i].quality))
+                ])),
+          ])),
     );
   }
 
@@ -1038,7 +1154,12 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
           itemBuilder: (_, i) {
             return RadioListTile(
               value: i,
-              title: Text("线路${i + 1}"),
+              title: Text(
+                  _activePlayUrl?.infoForUrl(playUrls[i]).cdn ?? "线路${i + 1}"),
+              subtitle: Text(_activePlayUrl
+                      ?.infoForUrl(playUrls[i])
+                      .displayedQuality(qualites[currentQuality].quality) ??
+                  ''),
               secondary: Text(
                 playUrls[i].contains(".flv") ? "FLV" : "HLS",
               ),
@@ -1351,7 +1472,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 错误信息：
 ${error?.toString()}
 ----------------
-${error?.stackTrace}''');
+$loadErrorTrace''');
     SmartDialog.showToast("已复制错误信息");
   }
 
@@ -1410,6 +1531,7 @@ ${error?.stackTrace}''');
   void onClose() {
     _closing = true;
     _accountWorker?.dispose();
+    _connectivitySubscription?.cancel();
     _stopPlayUrlRefreshTimer();
     WidgetsBinding.instance.removeObserver(this);
     scrollController.removeListener(scrollListener);

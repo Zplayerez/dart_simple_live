@@ -67,6 +67,21 @@ class LivePlayUrl {
         limitationReason: limitationReason,
       );
 
+  /// Stable across signed URL renewal and the removal/reordering of CDNs.
+  String identityForUrl(String url) {
+    final info = infoForUrl(url);
+    final uri = Uri.tryParse(url);
+    final format = uri?.path.toLowerCase().endsWith('.m3u8') == true
+        ? 'hls'
+        : 'flv';
+    return '${info.cdn?.isNotEmpty == true ? info.cdn : uri?.host}/$format';
+  }
+
+  int indexForIdentity(String? identity) {
+    final index = urls.indexWhere((url) => identityForUrl(url) == identity);
+    return index >= 0 ? index : 0;
+  }
+
   @override
   String toString() => json.encode({
     'urlCount': urls.length,

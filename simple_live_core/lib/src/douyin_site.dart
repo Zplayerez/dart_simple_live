@@ -246,6 +246,7 @@ class DouyinSite extends LiveSite {
 
   @override
   Future<LiveRoomDetail> getRoomDetail({required String roomId}) async {
+    if (roomId.startsWith('user:')) return _getAnchorRoom(roomId.substring(5));
     // 有两种roomId，一种是webRid，一种是roomId
     // roomId是一次性的，用户每次重新开播都会生成一个新的roomId
     // roomId一般长度为19位，例如：7376429659866598196
@@ -258,6 +259,65 @@ class DouyinSite extends LiveSite {
     }
 
     return await getRoomDetailByRoomId(roomId);
+  }
+
+  static String? _validId(dynamic value) {
+    final id = value?.toString();
+    return id == null || id.isEmpty || id == '0' || id == 'null' ? null : id;
+  }
+
+  static String _avatar(Map user) {
+    final avatar = user['avatar_thumb'] ?? user['avatar_medium'];
+    final urls = avatar is Map ? avatar['url_list'] : null;
+    return urls is List && urls.isNotEmpty ? urls.first.toString() : '';
+  }
+
+  Future<LiveRoomDetail> _getAnchorRoom(String secUid) async {
+    final session = accountSession;
+    final uri =
+        Uri.https('www.douyin.com', '/aweme/v1/web/user/profile/other/', {
+          'device_platform': 'webapp',
+          'aid': '6383',
+          'channel': 'channel_pc_web',
+          'sec_user_id': secUid,
+          'pc_client_type': '1',
+          'cookie_enabled': 'true',
+        });
+    final result = await HttpClient.instance.getJson(
+      DouyinSign.getAbogusUrl(uri.toString(), kDefaultUserAgent),
+      header: await getRequestHeaders(uri: uri),
+    );
+    if (session?.version != accountSession?.version) {
+      throw StateError('账号已更新，请重试');
+    }
+    if (result is! Map ||
+        result['user'] is! Map ||
+        (result['status_code'] != null &&
+            result['status_code'].toString() != '0')) {
+      throw StateError('暂时无法获取主播信息，请登录抖音后重试');
+    }
+    final user = result['user'] as Map;
+    final webRid = _validId(user['web_rid']);
+    if (webRid != null) return getRoomDetailByWebRid(webRid);
+    final roomId = _validId(user['room_id_str'] ?? user['room_id']);
+    if (roomId != null) return getRoomDetailByRoomId(roomId);
+    // A successful profile response explicitly without a live room permits
+    // following an offline anchor. Network/verification failures never do.
+    if (user['live_status']?.toString() == '1') {
+      throw StateError('主播正在直播，但暂时无法获取房间地址，请重试');
+    }
+    return LiveRoomDetail(
+      roomId: 'user:$secUid',
+      title: user['nickname']?.toString() ?? '抖音主播',
+      cover: '',
+      userName: user['nickname']?.toString() ?? '抖音主播',
+      userAvatar: _avatar(user),
+      online: 0,
+      status: false,
+      url: 'https://www.douyin.com/user/$secUid',
+      introduction: user['signature']?.toString(),
+      accountSessionVersion: session?.version ?? 0,
+    );
   }
 
   /// 通过roomId获取直播间信息
@@ -679,13 +739,15 @@ class DouyinSite extends LiveSite {
     );
   }
 
-  @override
-  Future<LiveSearchRoomResult> searchRooms(
+  Future<Map> _search(
     String keyword, {
     int page = 1,
+    bool anchors = false,
   }) async {
     final session = accountSession;
-    String serverUrl = "https://www.douyin.com/aweme/v1/web/live/search/";
+    final serverUrl = anchors
+        ? 'https://www.douyin.com/aweme/v1/web/discover/search/'
+        : 'https://www.douyin.com/aweme/v1/web/live/search/';
     var uri = Uri.parse(serverUrl).replace(
       scheme: "https",
       port: 443,
@@ -693,7 +755,10 @@ class DouyinSite extends LiveSite {
         "device_platform": "webapp",
         "aid": "6383",
         "channel": "channel_pc_web",
-        "search_channel": "aweme_live",
+        "search_channel": anchors ? "aweme_user_web" : "aweme_live",
+        "list_type": "single",
+        "need_filter_settings": "0",
+        "disable_rs": "0",
         "keyword": keyword,
         "search_source": "switch_tab",
         "query_correct_type": "1",
@@ -725,8 +790,10 @@ class DouyinSite extends LiveSite {
         "webid": "7382872326016435738",
       },
     );
-    //var requlestUrl = await getAbogusUrl(uri.toString());
-    var requlestUrl = uri.toString();
+    final requlestUrl = DouyinSign.getAbogusUrl(
+      uri.toString(),
+      kDefaultUserAgent,
+    );
     final requestHeaders = await getRequestHeaders(uri: Uri.parse(serverUrl));
     final dyCookie = requestHeaders['cookie'] ?? '';
 
@@ -740,7 +807,7 @@ class DouyinSite extends LiveSite {
         'cookie': dyCookie,
         'priority': 'u=1, i',
         'referer':
-            'https://www.douyin.com/search/${Uri.encodeComponent(keyword)}?type=live',
+            'https://www.douyin.com/root/search/${Uri.encodeComponent(keyword)}?type=${anchors ? 'user' : 'live'}',
         'sec-ch-ua':
             '"Microsoft Edge";v="125", "Chromium";v="125", "Not.A/Brand";v="24"',
         'sec-ch-ua-mobile': '?0',
@@ -751,9 +818,29 @@ class DouyinSite extends LiveSite {
         'user-agent': kDefaultUserAgent,
       }),
     );
-    if (result == "" || result == 'blocked') {
-      throw Exception("抖音直播搜索被限制，请稍后再试");
+    if (result is String) {
+      try {
+        result = jsonDecode(result);
+      } catch (_) {
+        result = null;
+      }
     }
+    if (result is! Map ||
+        (result['status_code'] != null &&
+            result['status_code'].toString() != '0') ||
+        result.containsKey('verify_data') ||
+        result[anchors ? 'user_list' : 'data'] is! List) {
+      throw Exception('抖音搜索暂时受限，请在账号管理中登录或完成验证后重试');
+    }
+    return result;
+  }
+
+  @override
+  Future<LiveSearchRoomResult> searchRooms(
+    String keyword, {
+    int page = 1,
+  }) async {
+    final result = await _search(keyword, page: page);
     var items = <LiveRoomItem>[];
     for (var item in result["data"] ?? []) {
       var itemData = json.decode(item["lives"]["rawdata"].toString());
@@ -766,7 +853,10 @@ class DouyinSite extends LiveSite {
       );
       items.add(roomItem);
     }
-    return LiveSearchRoomResult(hasMore: items.length >= 10, items: items);
+    return LiveSearchRoomResult(
+      hasMore: result['has_more']?.toString() == '1',
+      items: items,
+    );
   }
 
   @override
@@ -774,7 +864,31 @@ class DouyinSite extends LiveSite {
     String keyword, {
     int page = 1,
   }) async {
-    throw Exception("抖音暂不支持搜索主播，请直接搜索直播间");
+    final result = await _search(keyword, page: page, anchors: true);
+    final items = <LiveAnchorItem>[];
+    final seen = <String>{};
+    for (final entry in result['user_list'] as List) {
+      if (entry is! Map || entry['user_info'] is! Map) continue;
+      final user = entry['user_info'] as Map;
+      final webRid = _validId(user['web_rid']);
+      final secUid = _validId(user['sec_uid']);
+      // sec_uid is stable even while the anchor is offline. Never persist a
+      // transient broadcast room_id or treat it as the reusable web_rid.
+      final id = webRid ?? (secUid == null ? null : 'user:$secUid');
+      if (id == null || !seen.add(id)) continue;
+      items.add(
+        LiveAnchorItem(
+          roomId: id,
+          avatar: _avatar(user),
+          userName: user['nickname']?.toString() ?? '抖音用户',
+          liveStatus: user['live_status']?.toString() == '1',
+        ),
+      );
+    }
+    return LiveSearchAnchorResult(
+      hasMore: result['has_more']?.toString() == '1',
+      items: items,
+    );
   }
 
   @override

@@ -30,7 +30,12 @@ class AccountPage extends GetView<AccountController> {
                   height: 36,
                 ),
                 title: Text(accountPlatformName(siteId)),
-                subtitle: Text(accountSummary(state)),
+                subtitle: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(accountSummary(state)),
+                      Text(accountNextStep(state)),
+                    ]),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () => controller.openPlatform(siteId),
               );

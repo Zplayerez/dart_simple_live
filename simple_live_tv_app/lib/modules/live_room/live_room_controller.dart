@@ -59,10 +59,10 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   Timer? _playUrlRefreshTimer;
   Timer? _healthyPlaybackTimer;
   LivePlayUrl? _activePlayUrl;
-  LivePlayUrl? _preloadedPlayUrl;
+  PlaybackSource? _preloadedPlayUrl;
   DateTime? _preloadedAt;
   String? _preloadedContext;
-  Future<LivePlayUrl?>? _pendingPlayUrl;
+  Future<PlaybackSource?>? _pendingPlayUrl;
   String? _pendingPlayContext;
   int _playGeneration = 0;
   final _playerCommands = PlaybackCommandQueue();
@@ -81,7 +81,11 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       PlatformAccountManager.instance.account(site.id).revision;
   String get _roomContext =>
       '${site.id}/$roomId/$_accountRevision/$_playGeneration';
-  String get _playContext => '$_roomContext/$currentQuality';
+  String get _playContext => _roomContext;
+  String? get _lineIdentity =>
+      currentLineIndex >= 0 && currentLineIndex < playUrls.length
+          ? _activePlayUrl?.identityForUrl(playUrls[currentLineIndex])
+          : null;
 
   void _watchAccount() {
     _knownAccountRevision = _accountRevision;
@@ -209,7 +213,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       }
 
       initDanmau();
-      liveDanmaku.start(detail.value?.danmakuData);
+      if (liveStatus.value) liveDanmaku.start(detail.value?.danmakuData);
       if (liveStatus.value) await getPlayQualites();
     } catch (e) {
       if (_inactive || context != _roomContext) return;
@@ -324,7 +328,8 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   }
 
   bool _consumePreloadedPlayUrl() {
-    final sources = _preloadedPlayUrl;
+    final snapshot = _preloadedPlayUrl;
+    final sources = snapshot?.urls;
     final received = _preloadedAt;
     final context = _preloadedContext;
     _preloadedPlayUrl = null;
@@ -336,24 +341,26 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
         sources.urls.isEmpty) {
       return false;
     }
-    final line = currentLineIndex >= 0 && currentLineIndex < sources.urls.length
-        ? currentLineIndex
-        : 0;
+    final line = sources.indexForIdentity(_lineIdentity);
     if (!PlaybackRefreshPolicy.canUsePrefetched(
         sources.infoForUrl(sources.urls[line]), received)) {
       return false;
     }
-    _applyPlayUrl(sources);
+    _applyPlayUrl(snapshot!);
     return true;
   }
 
-  void _applyPlayUrl(LivePlayUrl sources) {
-    final oldLineIndex = currentLineIndex;
+  void _applyPlayUrl(PlaybackSource snapshot) {
+    final identity = _lineIdentity;
+    final sources = snapshot.urls;
     _activePlayUrl = sources;
-    playUrls.value = sources.urls;
+    detail.value = snapshot.detail;
+    online.value = snapshot.detail.online;
+    qualites.assignAll(snapshot.qualities);
+    currentQuality = snapshot.qualityIndex;
+    playUrls.value = List.of(sources.urls);
     playHeaders = sources.headers;
-    currentLineIndex =
-        oldLineIndex >= 0 && oldLineIndex < playUrls.length ? oldLineIndex : 0;
+    currentLineIndex = sources.indexForIdentity(identity);
     _updateSourceInfo();
   }
 
@@ -369,32 +376,39 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
         requested;
   }
 
-  Future<LivePlayUrl?> _fetchPlayUrl(
+  Future<PlaybackSource?> _fetchPlayUrl(
       String context, bool refreshRoomDetail) async {
     final requestedSite = site.liveSite;
-    final requestedRoom = roomId;
     final selectedQuality = qualites[currentQuality];
-    var requestedDetail = detail.value!;
     try {
-      if (refreshRoomDetail && site.id == Constant.kDouyu) {
-        requestedDetail =
-            await requestedSite.getRoomDetail(roomId: requestedRoom);
-        if (_inactive || context != _playContext) return null;
-        if (!requestedDetail.status && !requestedDetail.isRecord) return null;
+      final PlaybackSource? snapshot;
+      if (refreshRoomDetail) {
+        snapshot = await PlaybackSource.refresh(
+            requestedSite, roomId, selectedQuality);
+      } else {
+        final requestedDetail = detail.value!;
+        final qualities = List<LivePlayQuality>.of(qualites);
+        final index = currentQuality;
+        final urls = await requestedSite.getPlayUrls(
+            detail: requestedDetail, quality: selectedQuality);
+        snapshot = PlaybackSource(
+            detail: requestedDetail,
+            qualities: qualities,
+            qualityIndex: index,
+            urls: urls);
       }
-      final sources = await requestedSite.getPlayUrls(
-          detail: requestedDetail, quality: selectedQuality);
-      if (_inactive || context != _playContext || sources.urls.isEmpty) {
+      if (snapshot == null ||
+          _inactive ||
+          context != _playContext ||
+          snapshot.urls.urls.isEmpty) {
         return null;
       }
-      if (sources.accountSessionVersion != null &&
-          sources.accountSessionVersion !=
+      if (snapshot.urls.accountSessionVersion != null &&
+          snapshot.urls.accountSessionVersion !=
               (requestedSite.accountSession?.version ?? 0)) {
         return null;
       }
-      detail.value = requestedDetail;
-      online.value = requestedDetail.online;
-      return sources;
+      return snapshot;
     } catch (e) {
       Log.logPrint(e);
       return null;
@@ -411,7 +425,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       return false;
     }
     final context = _playContext;
-    final Future<LivePlayUrl?> request;
+    final Future<PlaybackSource?> request;
     if (_pendingPlayContext == context && _pendingPlayUrl != null) {
       request = _pendingPlayUrl!;
     } else {

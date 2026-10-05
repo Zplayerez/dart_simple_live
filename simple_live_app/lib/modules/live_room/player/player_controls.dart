@@ -23,19 +23,46 @@ Widget playerControls(
   VideoState videoState,
   LiveRoomController controller,
 ) {
-  return Obx(() {
-    if (controller.fullScreenState.value) {
-      return buildFullControls(
-        videoState,
-        controller,
-      );
-    }
-    return buildControls(
-      videoState.context.orientation == Orientation.portrait,
-      videoState,
-      controller,
-    );
-  });
+  return Obx(() => Stack(children: [
+        controller.fullScreenState.value
+            ? buildFullControls(videoState, controller)
+            : buildControls(
+                videoState.context.orientation == Orientation.portrait,
+                videoState,
+                controller),
+        if (controller.errorMsg.value.isNotEmpty ||
+            controller.recoveryMessage.value.isNotEmpty)
+          Positioned(
+              left: 12,
+              right: 12,
+              top: 56,
+              child: Material(
+                color: Colors.black87,
+                borderRadius: BorderRadius.circular(8),
+                child: Padding(
+                    padding: const EdgeInsets.all(8),
+                    child: Column(mainAxisSize: MainAxisSize.min, children: [
+                      Text(
+                          controller.errorMsg.value.isNotEmpty
+                              ? controller.errorMsg.value
+                              : controller.recoveryMessage.value,
+                          style: const TextStyle(color: Colors.white),
+                          textAlign: TextAlign.center),
+                      if (controller.errorMsg.value.isNotEmpty)
+                        Wrap(children: [
+                          TextButton(
+                              onPressed: controller.refreshRoom,
+                              child: const Text('重试')),
+                          TextButton(
+                              onPressed: controller.showQualitySheet,
+                              child: const Text('切换画质')),
+                          TextButton(
+                              onPressed: controller.openAccount,
+                              child: const Text('检查账号')),
+                        ]),
+                    ])),
+              )),
+      ]));
 }
 
 Widget buildFullControls(

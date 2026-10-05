@@ -97,6 +97,74 @@ String syntheticDouyinWebHeader() => [
 ].join('; ');
 
 void main() {
+  test(
+    'relogin waits for browser cleanup and retains the new session',
+    () async {
+      final gate = Completer<void>();
+      final started = Completer<void>();
+      final store = MemoryCredentialStore();
+      final manager = managerWith(
+        store,
+        cleanup: (_) async {
+          started.complete();
+          await gate.future;
+        },
+      );
+      await manager.importCookie('bilibili', 'SESSDATA=old', verify: false);
+      final logout = manager.logout('bilibili');
+      await started.future;
+      expect(manager.isBusy('bilibili'), isTrue);
+      final login = manager.importCookie(
+        'bilibili',
+        'SESSDATA=new',
+        verify: false,
+      );
+      var browserReady = false;
+      final browser = manager
+          .prepareWebLogin('bilibili')
+          .then((_) => browserReady = true);
+      await pumpEventQueue();
+      expect(manager.sessionFor('bilibili'), isNull);
+      expect(browserReady, isFalse);
+      gate.complete();
+      await Future.wait([logout, login, browser]);
+      expect(manager.credentialFor('bilibili'), 'SESSDATA=new');
+      expect(store.values['bilibili'], 'SESSDATA=new');
+      expect(manager.isBusy('bilibili'), isFalse);
+      expect(browserReady, isTrue);
+    },
+  );
+
+  test(
+    'removing only the authentication cookie clears verified identity',
+    () async {
+      final site = BiliBiliSite();
+      final manager = PlatformAccountManager(
+        sites: {'bilibili': site},
+        store: MemoryCredentialStore(),
+        verifier: (_) async => const LiveAccountValidation(
+          status: LiveAccountStatus.verified,
+          message: 'verified fixture',
+          userId: '123',
+          displayName: 'fixture',
+        ),
+      );
+      await manager.importCookie(
+        'bilibili',
+        'SESSDATA=synthetic; buvid3=device',
+      );
+      final headers = await site.getHeader() as AccountRequestHeaders;
+      headers.acceptResponseCookies(Uri.parse('https://www.bilibili.com/'), [
+        'SESSDATA=; Domain=.bilibili.com; Path=/; Max-Age=0',
+      ]);
+      await pumpEventQueue();
+      expect(manager.account('bilibili').status, LiveAccountStatus.expired);
+      expect(manager.account('bilibili').displayName, isNull);
+      expect(manager.credentialFor('bilibili'), 'buvid3=device');
+      expect(site.userId, 0);
+    },
+  );
+
   test('startup restores secure credentials without rewriting them', () async {
     final store = MemoryCredentialStore()
       ..values.addAll({
@@ -742,7 +810,7 @@ void main() {
           LiveAccountStatus.configured,
         );
         expect(restarted.account('douyin').userId, isNull);
-        expect(restarted.account('douyin').message, contains('尚未验证'));
+        expect(restarted.account('douyin').message, contains('尚未确认'));
       },
     );
 
@@ -760,7 +828,7 @@ void main() {
         );
         expect(visitor.status, LiveAccountStatus.configured);
         expect(visitor.userId, isNull);
-        expect(visitor.message, contains('游客设备 Cookie'));
+        expect(visitor.message, contains('游客设备信息'));
         expect(site.accountSession!.cookie.hasAccountSession, isFalse);
 
         final account = await manager.importCookie(
@@ -769,7 +837,7 @@ void main() {
         );
         expect(account.status, LiveAccountStatus.configured);
         expect(account.userId, isNull);
-        expect(account.message, contains('账号身份与播放权益尚未验证'));
+        expect(account.message, contains('账号身份与可用画质尚未确认'));
         expect(site.accountSession!.cookie.hasAccountSession, isTrue);
       },
     );

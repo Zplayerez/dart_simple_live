@@ -35,7 +35,7 @@ jobs:
         run: |
           dart pub get
           dart analyze
-          dart test test/platform_account_test.dart test/account_session_regression_test.dart test/playback_refresh_policy_test.dart test/sensitive_log_regression_test.dart test/http_response_cookie_regression_test.dart test/playback_command_queue_test.dart test/playback_quality_label_test.dart
+          dart test test/platform_account_test.dart test/account_session_regression_test.dart test/playback_refresh_policy_test.dart test/sensitive_log_regression_test.dart test/http_response_cookie_regression_test.dart test/playback_command_queue_test.dart test/playback_quality_label_test.dart test/experience_regression_test.dart
       - name: Shared account tests
         working-directory: simple_live_account
         run: |

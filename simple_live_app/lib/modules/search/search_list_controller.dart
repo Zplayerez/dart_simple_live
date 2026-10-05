@@ -8,6 +8,7 @@ class SearchListController extends BasePageController {
   /// 搜索模式，0=直播间，1=主播
   var searchMode = 0.obs;
   final Site site;
+  bool _hasMore = false;
   SearchListController(
     this.site,
   );
@@ -22,21 +23,25 @@ class SearchListController extends BasePageController {
 
   @override
   Future<List> getData(int page, int pageSize) async {
+    final generation = requestGeneration;
     if (keyword.isEmpty) {
       return [];
     }
     if (searchMode.value == 1) {
       // 搜索主播
       var result = await site.liveSite.searchAnchors(keyword, page: page);
+      if (generation == requestGeneration) _hasMore = result.hasMore;
       return result.items;
     }
     var result = await site.liveSite.searchRooms(keyword, page: page);
-
+    if (generation == requestGeneration) _hasMore = result.hasMore;
     return result.items;
   }
 
   void clear() {
-    pageEmpty.value = false;
-    list.clear();
+    resetData();
   }
+
+  @override
+  bool hasMoreForPage(List result) => _hasMore;
 }

@@ -52,6 +52,11 @@ class PlatformAccountManager extends GetxService {
   final Map<String, LiveAccountSession> _sessions = {};
   final Map<String, Future<void>> _storeTasks = {};
   final Map<String, int> _verificationAttempts = {};
+  final cleaningAccounts = <String>{}.obs;
+  final Map<String, Future<PlatformAccountState>> _logoutTasks = {};
+  bool isBusy(String siteId) =>
+      cleaningAccounts.contains(siteId) ||
+      account(siteId).status == LiveAccountStatus.verifying;
   Future<void>? _initialization;
 
   PlatformAccountState account(String siteId) {
@@ -156,6 +161,8 @@ class PlatformAccountManager extends GetxService {
       allowBareTtwid: siteId == 'douyin',
     );
     if (parsed.isEmpty) throw const FormatException('请输入 Cookie');
+    final cleanup = _logoutTasks[siteId];
+    if (cleanup != null) await cleanup;
     final session = _useCookie(siteId, parsed);
 
     await _persistSession(siteId, session);
@@ -183,7 +190,7 @@ class PlatformAccountManager extends GetxService {
       siteId: siteId,
       status: LiveAccountStatus.configured,
       persistence: persistence,
-      message: '已配置，等待验证',
+      message: '已保存登录信息，等待验证',
       storageMessage: persistence == AccountPersistence.secure
           ? null
           : '正在保存到系统安全存储',
@@ -203,13 +210,15 @@ class PlatformAccountManager extends GetxService {
       return;
     _sessions[siteId] = session;
     // Server renewal retains the same revision and never restarts playback.
-    if (session.cookie.isEmpty) {
+    if (session.cookie.isEmpty ||
+        (current.cookie.hasAccountSessionFor(current.platform) &&
+            !session.cookie.hasAccountSessionFor(session.platform))) {
       _verificationAttempts[siteId] = (_verificationAttempts[siteId] ?? 0) + 1;
       accounts[siteId] = account(siteId).copyWith(
         status: LiveAccountStatus.expired,
-        message: '平台已清除会话 Cookie，请重新导入并验证',
+        message: '登录已失效，请重新登录；设备信息已保留',
         clearIdentity: true,
-        hasCredential: false,
+        hasCredential: !session.cookie.isEmpty,
       );
       final site = _sites[siteId];
       if (site is BiliBiliSite) site.userId = 0;
@@ -267,6 +276,14 @@ class PlatformAccountManager extends GetxService {
   /// Retry a previous logout's cleanup only when the browser will be used.
   /// Never let stale browser cookies silently undo a persisted logout.
   Future<void> prepareWebLogin(String siteId) async {
+    final cleanup = _logoutTasks[siteId];
+    if (cleanup != null) {
+      final state = await cleanup;
+      if (state.storageMessage != null) {
+        throw StateError('Previous account cleanup is incomplete');
+      }
+      return;
+    }
     final revision = account(siteId).revision;
     final blocked = await readRestoreBlocked?.call(siteId) == true;
     if (!blocked || !_isCurrent(siteId, revision)) return;
@@ -322,7 +339,22 @@ class PlatformAccountManager extends GetxService {
     return account(siteId);
   }
 
-  Future<PlatformAccountState> logout(String siteId) async {
+  Future<PlatformAccountState> logout(String siteId) {
+    final pending = _logoutTasks[siteId];
+    if (pending != null) return pending;
+    cleaningAccounts.add(siteId);
+    final completion = Completer<PlatformAccountState>();
+    _logoutTasks[siteId] = completion.future;
+    _logout(siteId)
+        .then(completion.complete, onError: completion.completeError)
+        .whenComplete(() {
+          _logoutTasks.remove(siteId);
+          cleaningAccounts.remove(siteId);
+        });
+    return completion.future;
+  }
+
+  Future<PlatformAccountState> _logout(String siteId) async {
     final revision = account(siteId).revision + 1;
     _verificationAttempts[siteId] = (_verificationAttempts[siteId] ?? 0) + 1;
     _sessions.remove(siteId);

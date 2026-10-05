@@ -134,8 +134,7 @@ class _AccountPageState extends State<AccountPage> {
                   width: 960.w,
                   child: Obx(() {
                     final state = _accounts.account(widget.siteId);
-                    final busy =
-                        _working || state.status == LiveAccountStatus.verifying;
+                    final busy = _working || _accounts.isBusy(widget.siteId);
                     return ListView(
                       padding: AppStyle.edgeInsetsA48,
                       children: [

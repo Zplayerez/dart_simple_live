@@ -175,20 +175,38 @@ class DouyuSite extends LiveSite {
     final data = quality.data as DouyuPlayData;
     final urls = <String>[];
     final metadata = <String, LivePlayUrlInfo>{};
-    for (final cdn in data.cdns) {
-      final result = await _getPlayUrlResult(
-        detail.roomId,
-        args,
-        data.rate,
-        cdn,
-        session,
+    // A failed/slow alternative must not discard another CDN's usable source.
+    // Bound fan-out and preserve the provider's order, regardless of completion.
+    final results = <(String, LivePlayUrlInfo)?>[];
+    final cdns = data.cdns.toSet().toList();
+    for (var offset = 0; offset < cdns.length; offset += 3) {
+      results.addAll(
+        await Future.wait(
+          cdns.skip(offset).take(3).map((cdn) async {
+            try {
+              return await _getPlayUrlResult(
+                detail.roomId,
+                args,
+                data.rate,
+                cdn,
+                session,
+              ).timeout(const Duration(seconds: 6));
+            } catch (_) {
+              return null;
+            }
+          }),
+        ),
       );
+    }
+    for (final result in results) {
+      if (result == null) continue;
       final url = result.$1;
       if (url.isNotEmpty) {
-        urls.add(url);
+        if (!urls.contains(url)) urls.add(url);
         metadata[url] = result.$2;
       }
     }
+    if (urls.isEmpty) throw StateError('斗鱼线路暂时不可用，请稍后重试');
     final first = urls.isEmpty ? null : metadata[urls.first];
     return LivePlayUrl(
       urls: urls,

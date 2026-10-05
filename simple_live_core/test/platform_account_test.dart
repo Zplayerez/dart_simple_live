@@ -90,7 +90,7 @@ void main() {
           ),
         );
         expect(result.status, LiveAccountStatus.configured);
-        expect(result.message, contains('ttwid 不代表'));
+        expect(result.message, contains('仅保存了游客设备信息'));
       },
     );
 

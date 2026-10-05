@@ -39,7 +39,21 @@ class LiveSite {
           !current.permits(uri)) {
         return;
       }
-      final updatedCookie = current.cookie.mergeResponseCookies(uri, cookies);
+      // A delayed response may only rotate keys still matching its request.
+      // Independent keys from concurrent responses can still be merged.
+      final eligible = cookies.where((header) {
+        try {
+          final keys = PlatformCookie.parse(
+            header.split(';').first,
+          ).values.keys;
+          return keys.every(
+            (key) => snapshot.cookie.values[key] == current.cookie.values[key],
+          );
+        } on FormatException {
+          return false;
+        }
+      });
+      final updatedCookie = current.cookie.mergeResponseCookies(uri, eligible);
       if (updatedCookie.header == current.cookie.header) return;
       final updated = LiveAccountSession(
         platform: current.platform,
