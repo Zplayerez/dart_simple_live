@@ -95,6 +95,7 @@ jobs:
 
       #打包APK
       - name: Build APK
+        id: build_apk
         run: |
           cd simple_live_tv_app
           flutter build apk --release --split-per-abi
@@ -104,6 +105,7 @@ jobs:
 
       #上传APK至Artifacts
       - name: Upload APK to Artifacts
+        if: ${{ !cancelled() && steps.build_apk.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         with:
           name: android_tv
