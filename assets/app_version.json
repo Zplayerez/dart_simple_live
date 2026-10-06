@@ -1,7 +1,7 @@
 {
-  "version": "1.11.7",
-  "version_num": 11107,
-  "version_desc": "- 新增四平台账号管理与网页登录\n- 修复 Windows 登录白屏、虎牙登录凭据识别和异常辅助 Cookie 导入\n- 斗鱼正常播放不再定时重启，播放失败时刷新地址恢复",
+  "version": "1.11.8",
+  "version_num": 11108,
+  "version_desc": "- 优化启动开销、播放恢复和画质线路偏好\n- 新增常看置顶、关注失败重试、全平台聚合搜索和搜索历史\n- 接入抖音主播搜索，受平台限制时提供登录与验证入口\n- 完善账号状态、登录清理与凭据更新\n- 新增本仓库独立签名的 Android 正式安装包",
   "prerelease": false,
   "download_url": "https://github.com/Zplayerez/dart_simple_live/releases"
 }

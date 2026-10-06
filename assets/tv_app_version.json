@@ -1,7 +1,7 @@
 {
-    "version": "1.6.6",
-    "version_num": 10606,
-    "version_desc": "- 修复斗鱼直播播放地址过期后反复刷新",
+    "version": "1.6.7",
+    "version_num": 10607,
+    "version_desc": "- 新增四平台账号管理，完善登录状态与凭据更新\n- 修复播放恢复时复用过期地址，刷新后保留线路身份\n- 改善斗鱼多线路容错和抖音未开播主播处理\n- 新增本仓库独立签名的 Android TV 正式安装包",
     "prerelease":false,
-    "download_url": "https://github.com/xiaoyaocz/dart_simple_live/releases"
+    "download_url": "https://github.com/Zplayerez/dart_simple_live/releases"
 }
