@@ -30,6 +30,8 @@ jobs:
           assert metadata['version_num'] == int(build), 'TV update metadata build differs'
           print(f'TV release version verified: {version}+{build}')
           PYTHON
+      - name: Check APK certificate parser
+        run: python3 -m unittest discover -s .github/scripts -p 'test_*.py'
   build-tv:
     needs: verify-version
     runs-on: ubuntu-24.04
