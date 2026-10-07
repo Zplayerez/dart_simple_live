@@ -131,18 +131,26 @@ class DouyuSite extends LiveSite {
     final session = accountSession;
     var data = _sign(detail, session);
     data += "&cdn=&rate=-1&ver=Douyu_223061205&iar=1&ive=1&hevc=0&fa=0";
-    List<LivePlayQuality> qualities = [];
-    var result = await HttpClient.instance.postJson(
+    final result = await HttpClient.instance.postJson(
       "https://www.douyu.com/lapi/live/getH5Play/${detail.roomId}",
       data: data,
       header: _sessionHeaders(detail.roomId, session),
       formUrlEncoded: true,
     );
 
-    var cdns = <String>[];
-    for (var item in result["data"]["cdnsWithName"]) {
-      cdns.add(item["cdn"].toString());
+    final playData = _playResponseData(result);
+    final returnedCdns = playData['cdnsWithName'];
+    final returnedQualities = playData['multirates'];
+    if (returnedCdns is! List || returnedQualities is! List) {
+      throw StateError('斗鱼播放信息不完整，请稍后重试');
     }
+    final cdns = <String>{
+      for (final item in returnedCdns)
+        if (item is Map &&
+            item['cdn'] is String &&
+            (item['cdn'] as String).trim().isNotEmpty)
+          (item['cdn'] as String).trim(),
+    }.toList();
 
     // 如果cdn以scdn开头，将其放到最后
     cdns.sort((a, b) {
@@ -154,15 +162,49 @@ class DouyuSite extends LiveSite {
       return 0;
     });
 
-    for (var item in result["data"]["multirates"]) {
+    final qualities = <LivePlayQuality>[];
+    for (final item in returnedQualities) {
+      if (item is! Map) continue;
+      final name = item['name'];
+      final rate = int.tryParse(item['rate'].toString());
+      if (name is! String || name.trim().isEmpty || rate == null || rate < 0) {
+        continue;
+      }
       qualities.add(
-        LivePlayQuality(
-          quality: item["name"].toString(),
-          data: DouyuPlayData(item["rate"], cdns),
-        ),
+        LivePlayQuality(quality: name.trim(), data: DouyuPlayData(rate, cdns)),
       );
     }
+    if (cdns.isEmpty || qualities.isEmpty) {
+      throw StateError('斗鱼暂时没有可用画质或线路，请稍后重试');
+    }
     return qualities;
+  }
+
+  // Dio may return text when the provider sends JSON with a non-JSON content
+  // type. Never include provider bodies/messages in errors: they can contain
+  // session data or a verification page. An API failure does not mean offline.
+  Map _playResponseData(dynamic response) {
+    if (response is String) {
+      try {
+        response = jsonDecode(response);
+      } on FormatException {
+        throw StateError('斗鱼播放接口返回了非 JSON 数据，请稍后重试');
+      }
+    }
+    if (response is! Map) {
+      throw StateError('斗鱼播放接口返回格式异常，请稍后重试');
+    }
+    final code = int.tryParse(response['error'].toString());
+    if (code != 0) {
+      throw StateError(
+        code == null ? '斗鱼播放接口缺少状态码，请稍后重试' : '斗鱼暂时无法提供播放信息（错误码 $code），请稍后重试',
+      );
+    }
+    final data = response['data'];
+    if (data is! Map) {
+      throw StateError('斗鱼播放接口返回的数据格式异常，请稍后重试');
+    }
+    return data;
   }
 
   @override
@@ -249,25 +291,33 @@ class DouyuSite extends LiveSite {
       header: _sessionHeaders(roomId, session),
       formUrlEncoded: true,
     );
-    if (result is! Map || result['error'] != 0 || result['data'] is! Map) {
-      // Do not turn a provider failure into a URL containing null/null.
-      throw StateError('斗鱼暂时无法提供播放地址');
-    }
-    final data = result['data'] as Map;
+    final data = _playResponseData(result);
     final actualRate = int.tryParse(data['rate'].toString());
     String? actualQuality;
-    for (final quality in data['multirates'] as List? ?? const []) {
-      if (actualRate != null &&
+    final rates = data['multirates'];
+    for (final quality in rates is List ? rates : const []) {
+      if (quality is Map &&
+          actualRate != null &&
           int.tryParse(quality['rate'].toString()) == actualRate) {
         actualQuality = quality['name']?.toString();
         break;
       }
     }
-    final base = data['rtmp_url']?.toString() ?? '';
-    final stream = data['rtmp_live']?.toString() ?? '';
-    final url = base.isEmpty || stream.isEmpty
-        ? ''
-        : '$base/${HtmlUnescape().convert(stream)}';
+    final base = data['rtmp_url'];
+    final stream = data['rtmp_live'];
+    if (base is! String ||
+        stream is! String ||
+        base.isEmpty ||
+        stream.isEmpty) {
+      throw StateError('斗鱼返回的播放地址不完整，请稍后重试');
+    }
+    final url = '$base/${HtmlUnescape().convert(stream)}';
+    final uri = Uri.tryParse(url);
+    if (uri == null ||
+        !const ['http', 'https'].contains(uri.scheme) ||
+        uri.host.isEmpty) {
+      throw StateError('斗鱼返回了无效的播放地址，请稍后重试');
+    }
     return (
       url,
       LivePlayUrlInfo(

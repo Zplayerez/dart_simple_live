@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:get/get.dart' hide Response;
 import 'package:hive/hive.dart';
+import 'package:media_kit/media_kit.dart';
 import 'package:simple_live_account/simple_live_account.dart';
 import 'package:simple_live_app/app/controller/app_settings_controller.dart';
 import 'package:simple_live_app/app/sites.dart';
@@ -104,8 +105,15 @@ class PlaybackFixture extends LiveSite {
           fetchedAt: DateTime.now());
 }
 
+class _RecordingPlayer extends PlatformPlayer {
+  _RecordingPlayer() : super(configuration: const PlayerConfiguration());
+}
+
 class RecordingRoomController extends LiveRoomController {
-  RecordingRoomController(Site site) : super(pSite: site, pRoomId: '123');
+  RecordingRoomController(Site site) : super(pSite: site, pRoomId: '123') {
+    player = Player(platformPlayer: _RecordingPlayer());
+    addTearDown(player.dispose);
+  }
   final opened = <String>[];
   @override
   Future<int> getQualityLevel() async => 2;
@@ -322,7 +330,8 @@ void main() {
     await tester.pump();
     expect(fixture.generation, 2);
     expect(controller.opened, hasLength(1));
-    controller.mediaError('synthetic EOF');
+    controller.player.platform!.state = const PlayerState(completed: true);
+    controller.mediaEnd();
     await tester.pump();
     expect(controller.opened, hasLength(2));
     expect(controller.opened.last, 'https://a.invalid/live.flv?v=2');

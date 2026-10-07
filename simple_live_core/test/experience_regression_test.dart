@@ -133,6 +133,97 @@ void main() {
   });
 
   test(
+    'Douyu accepts JSON text and numeric strings without losing quality',
+    () async {
+      respond(
+        (_) => jsonEncode({
+          'error': '0',
+          'data': {
+            'cdnsWithName': [
+              null,
+              {'cdn': 'scdn'},
+              {'cdn': 'tct'},
+            ],
+            'multirates': [
+              null,
+              {'name': '原画', 'rate': '0'},
+              {'name': 'invalid'},
+            ],
+          },
+        }),
+      );
+      final qualities = await DouyuSite().getPlayQualites(
+        detail: room(data: 'fixture=1'),
+      );
+      expect(qualities.single.quality, '原画');
+      final data = qualities.single.data as DouyuPlayData;
+      expect(data.rate, 0);
+      expect(data.cdns, ['tct', 'scdn']);
+    },
+  );
+
+  for (final response in <Object?>[
+    '<html>synthetic-credential-do-not-log</html>',
+    {'error': -1, 'data': 'synthetic-credential-do-not-log'},
+    {'error': 0, 'data': ''},
+    {
+      'error': 0,
+      'data': {'cdnsWithName': [], 'multirates': []},
+    },
+    {
+      'error': 0,
+      'data': {'cdnsWithName': 'invalid', 'multirates': []},
+    },
+    [],
+    null,
+  ]) {
+    test(
+      'Douyu rejects malformed quality response ${response.runtimeType} safely',
+      () async {
+        respond((_) => response);
+        await expectLater(
+          DouyuSite().getPlayQualites(detail: room(data: 'fixture=1')),
+          throwsA(
+            isA<StateError>().having(
+              (e) => e.toString(),
+              'safe error',
+              allOf(contains('斗鱼'), isNot(contains('synthetic-credential'))),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  test(
+    'Douyu source response supports JSON text and rejects non-HTTP URLs',
+    () async {
+      respond((request) {
+        final cdn = Uri.splitQueryString(request.data as String)['cdn'];
+        return jsonEncode({
+          'error': 0,
+          'data': {
+            'rtmp_url': cdn == 'invalid'
+                ? 'file:///private'
+                : 'https://cdn.invalid',
+            'rtmp_live': 'live.flv',
+            'rate': 0,
+            'multirates': 'unexpected',
+          },
+        });
+      });
+      final urls = await DouyuSite().getPlayUrls(
+        detail: room(data: 'fixture=1'),
+        quality: LivePlayQuality(
+          quality: '原画',
+          data: DouyuPlayData(0, ['invalid', 'valid']),
+        ),
+      );
+      expect(urls.urls, ['https://cdn.invalid/live.flv']);
+    },
+  );
+
+  test(
     'Douyu reports total failure without returning malformed URLs',
     () async {
       respond((_) => {'error': -1});

@@ -1,3 +1,4 @@
+import 'package:simple_live_core/simple_live_core.dart';
 import 'dart:async';
 import 'dart:io';
 
@@ -62,7 +63,6 @@ mixin PlayerMixin {
       await pp.setProperty('force-seekable', 'yes');
     }
   }
-
 }
 mixin PlayerStateMixin on PlayerMixin {
   /// 是否显示弹幕
@@ -268,9 +268,7 @@ class PlayerController extends BaseController
         mediaEnd();
       }
     });
-    _logSubscription = player.stream.log.listen((event) {
-      Log.d("播放器日志：$event");
-    });
+    _logSubscription = player.stream.log.listen(handlePlayerLog);
     _widthSubscription = player.stream.width.listen((event) {
       Log.w(
           'width:$event  W:${(player.state.width)}  H:${(player.state.height)}');
@@ -287,7 +285,37 @@ class PlayerController extends BaseController
     });
   }
 
+  DateTime? _decoderLogAt;
+  int _suppressedDecoderLogs = 0;
+
+  void handlePlayerLog(PlayerLog event) {
+    if (PlaybackHealthMonitor.isDecoderError(
+        event.prefix, event.level, event.text)) {
+      mediaDecoderError();
+      final now = DateTime.now();
+      if (_decoderLogAt != null &&
+          now.difference(_decoderLogAt!) < const Duration(seconds: 5)) {
+        _suppressedDecoderLogs++;
+        return;
+      }
+      _flushDecoderLogs();
+      _decoderLogAt = now;
+    }
+    Log.d("播放器日志：$event");
+  }
+
+  void _flushDecoderLogs() {
+    if (_suppressedDecoderLogs > 0) {
+      Log.d('[Playback] repeated_decoder_errors count=$_suppressedDecoderLogs');
+      _suppressedDecoderLogs = 0;
+    }
+  }
+
+  void mediaDecoderError() {}
+
   void disposeStream() {
+    _flushDecoderLogs();
+    _decoderLogAt = null;
     _errorSubscription?.cancel();
     _completedSubscription?.cancel();
     _widthSubscription?.cancel();
