@@ -1,11 +1,12 @@
 import 'dart:async';
 
+import 'package:simple_live_account/simple_live_account.dart';
+
 import 'package:canvas_danmaku/models/danmaku_content_item.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:get/get.dart';
 import 'package:media_kit/media_kit.dart';
-import 'package:media_kit_video/media_kit_video.dart';
 import 'package:simple_live_core/simple_live_core.dart';
 import 'package:simple_live_tv_app/app/constant.dart';
 import 'package:simple_live_tv_app/app/controller/app_settings_controller.dart';
@@ -54,21 +55,54 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
   Map<String, String>? playHeaders;
 
-  /// 在当前地址到期前后台续签，断流时可以直接使用已准备好的地址。
+  /// Only finite-lived sources are prefetched; healthy playback is never replaced.
   Timer? _playUrlRefreshTimer;
-  bool _hasPreloadedPlayUrl = false;
-  bool _refreshingPlayUrl = false;
+  Timer? _healthyPlaybackTimer;
+  final _playbackHealth = PlaybackHealthMonitor();
+  final _recovery = PlaybackRecovery();
+  String _recoveryReason = 'initial';
+  LivePlayUrl? _activePlayUrl;
+  PlaybackSource? _preloadedPlayUrl;
+  DateTime? _preloadedAt;
+  String? _preloadedContext;
+  Future<PlaybackSource?>? _pendingPlayUrl;
+  String? _pendingPlayContext;
+  int _playGeneration = 0;
+  final _playerCommands = PlaybackCommandQueue();
+  bool _closing = false;
+  Object? _roomLoad;
+  bool get _inactive => _closing || isClosed;
+  String? _openingContext;
+  String? _pendingFailureContext;
+  int _sourceSequence = 0;
+  DateTime? _lastOpenedAt;
+  Timer? _deferredFailureTimer;
+  Timer? _retryDelayTimer;
+  Completer<void>? _retryDelay;
+  Worker? _accountWorker;
+  int _knownAccountRevision = 0;
 
-  /// 斗鱼播放地址到期前预连接备用播放器，切换时不重启当前画面。
-  Player? _standbyPlayer;
-  VideoController? _standbyVideoController;
-  StreamSubscription? _standbyErrorSubscription;
-  StreamSubscription? _standbyPlayingSubscription;
-  StreamSubscription? _standbyWidthSubscription;
-  StreamSubscription? _standbyHeightSubscription;
-  Completer<bool>? _standbyReadyCompleter;
-  bool _preparingStandbyPlayer = false;
-  bool _switchingStandbyPlayer = false;
+  int get _accountRevision =>
+      PlatformAccountManager.instance.account(site.id).revision;
+  String get _roomContext =>
+      '${site.id}/$roomId/$_accountRevision/$_playGeneration';
+  String get _playContext => _roomContext;
+  String? get _lineIdentity =>
+      currentLineIndex >= 0 && currentLineIndex < playUrls.length
+          ? _activePlayUrl?.identityForUrl(playUrls[currentLineIndex])
+          : null;
+
+  void _watchAccount() {
+    _knownAccountRevision = _accountRevision;
+    _accountWorker = ever(PlatformAccountManager.instance.accounts, (_) {
+      final revision = _accountRevision;
+      if (revision == _knownAccountRevision || _inactive) return;
+      _knownAccountRevision = revision;
+      // Verification alone does not change revision. Explicit account changes
+      // invalidate signed URLs and reload this room once with the new session.
+      refreshRoom();
+    });
+  }
 
   /// 当前线路
   var currentLineIndex = -1;
@@ -79,8 +113,10 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
   var datetime = "00:00".obs;
 
+  Timer? _clockTimer;
+
   void initTimer() {
-    Timer.periodic(const Duration(seconds: 1), (timer) {
+    _clockTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       var now = DateTime.now();
       datetime.value =
           "${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}";
@@ -95,6 +131,8 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
   @override
   void onInit() {
+    _watchAccount();
+    WidgetsBinding.instance.addObserver(this);
     initTimer();
     showDanmakuState.value = AppSettingsController.instance.danmuEnable.value;
     followed.value = DBService.instance.getFollowExist("${site.id}_$roomId");
@@ -159,40 +197,51 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   }
 
   /// 加载直播间信息
-  void loadData() async {
+  Future<void> loadData() async {
+    if (_inactive) return;
+    final load = Object();
+    _roomLoad = load;
+    final context = _roomContext;
     try {
       SmartDialog.showLoading(msg: "");
       pageLoadding.value = true;
-      detail.value = await site.liveSite.getRoomDetail(roomId: roomId);
+      final loadedDetail = await site.liveSite.getRoomDetail(roomId: roomId);
+      if (_inactive || context != _roomContext) return;
+      detail.value = loadedDetail;
 
       addHistory();
       online.value = detail.value!.online;
       liveStatus.value = detail.value!.status || detail.value!.isRecord;
-      if (liveStatus.value) {
-        getPlayQualites();
-      }
+
       if (detail.value!.isRecord) {
         SmartDialog.showToast("当前主播未开播，正在轮播录像");
       }
 
       initDanmau();
-      liveDanmaku.start(detail.value?.danmakuData);
+      if (liveStatus.value) liveDanmaku.start(detail.value?.danmakuData);
+      if (liveStatus.value) await getPlayQualites();
     } catch (e) {
-      SmartDialog.showToast(e.toString());
+      if (_inactive || context != _roomContext) return;
+      Log.logPrint(e);
+      SmartDialog.showToast("无法读取直播间信息");
     } finally {
+      if (identical(_roomLoad, load)) _roomLoad = null;
       SmartDialog.dismiss(status: SmartStatus.loading);
       pageLoadding.value = false;
     }
   }
 
   /// 初始化播放器
-  void getPlayQualites() async {
+  Future<void> getPlayQualites() async {
+    if (_inactive) return;
     qualites.clear();
     currentQuality = -1;
+    final context = _roomContext;
     try {
       var playQualites =
           await site.liveSite.getPlayQualites(detail: detail.value!);
 
+      if (_inactive || context != _roomContext) return;
       if (playQualites.isEmpty) {
         SmartDialog.showToast("无法读取播放清晰度");
         return;
@@ -211,274 +260,377 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
         currentQuality = middle;
       }
 
-      getPlayUrl();
+      await getPlayUrl();
     } catch (e) {
+      if (_inactive || context != _roomContext) return;
       Log.logPrint(e);
       SmartDialog.showToast("无法读取播放清晰度");
     }
   }
 
-  void getPlayUrl() async {
+  Future<void> getPlayUrl() async {
+    if (_inactive || currentQuality < 0 || currentQuality >= qualites.length) {
+      return;
+    }
     _stopPlayUrlRefreshTimer();
     playUrls.clear();
     currentQualityInfo.value = qualites[currentQuality].quality;
     currentLineInfo.value = "";
     currentLineIndex = -1;
+    final context = _playContext;
     if (!await _refreshPlayUrl()) {
+      if (_inactive || context != _playContext) return;
       SmartDialog.showToast("无法读取播放地址");
       return;
     }
-    //重置错误次数
-    mediaErrorRetryCount = 0;
+    if (_inactive || context != _playContext) return;
+    // An explicit room/quality change resets the recovery budget.
+    _recovery.reset();
     await setPlayer();
     _startPlayUrlRefreshTimer();
   }
 
   void _startPlayUrlRefreshTimer() {
-    if (site.id != Constant.kDouyu) {
-      return;
-    }
-    _playUrlRefreshTimer?.cancel();
-    _hasPreloadedPlayUrl = false;
-    _playUrlRefreshTimer = Timer.periodic(const Duration(minutes: 4), (_) {
-      if (!liveStatus.value || isBackground || _handlingMediaFailure) {
-        return;
-      }
-      // 旧地址约 5 分钟后失效，先用新地址连接备用播放器，连接成功后再切换。
-      _hasPreloadedPlayUrl = false;
-      unawaited(_prepareStandbyPlayer());
-    });
-  }
-
-  void _stopPlayUrlRefreshTimer() {
     _playUrlRefreshTimer?.cancel();
     _playUrlRefreshTimer = null;
-    _hasPreloadedPlayUrl = false;
-    _disposeStandbyPlayer();
-  }
-
-  void _cancelStandbySubscriptions() {
-    _standbyErrorSubscription?.cancel();
-    _standbyPlayingSubscription?.cancel();
-    _standbyWidthSubscription?.cancel();
-    _standbyHeightSubscription?.cancel();
-    _standbyErrorSubscription = null;
-    _standbyPlayingSubscription = null;
-    _standbyWidthSubscription = null;
-    _standbyHeightSubscription = null;
-  }
-
-  void _disposeStandbyPlayer() {
-    final ready = _standbyReadyCompleter;
-    _standbyReadyCompleter = null;
-    if (ready != null && !ready.isCompleted) {
-      ready.complete(false);
-    }
-    _cancelStandbySubscriptions();
-    final standby = _standbyPlayer;
-    _standbyPlayer = null;
-    _standbyVideoController = null;
-    if (standby != null) {
-      unawaited(standby.dispose());
-    }
-  }
-
-  Future<bool> _waitForStandbyPlayer(Player standby) async {
-    final ready = Completer<bool>();
-    _standbyReadyCompleter = ready;
-    Timer? timeout;
-
-    void finish(bool value) {
-      if (ready.isCompleted) {
-        return;
-      }
-      timeout?.cancel();
-      ready.complete(value);
-    }
-
-    void checkReady([Object? _]) {
-      if (standby.state.playing &&
-          (standby.state.width ?? 0) > 0 &&
-          (standby.state.height ?? 0) > 0) {
-        finish(true);
-      }
-    }
-
-    _standbyPlayingSubscription = standby.stream.playing.listen(checkReady);
-    _standbyWidthSubscription = standby.stream.width.listen(checkReady);
-    _standbyHeightSubscription = standby.stream.height.listen(checkReady);
-    _standbyErrorSubscription = standby.stream.error.listen((event) {
-      Log.d("备用播放器错误：$event");
-      finish(false);
-    });
-    timeout = Timer(const Duration(seconds: 45), () => finish(false));
-    checkReady();
-
-    final result = await ready.future;
-    if (identical(_standbyReadyCompleter, ready)) {
-      _standbyReadyCompleter = null;
-    }
-    _cancelStandbySubscriptions();
-    return result;
-  }
-
-  Future<void> _prepareStandbyPlayer() async {
-    if (_preparingStandbyPlayer ||
-        _switchingStandbyPlayer ||
-        _standbyPlayer != null ||
-        !liveStatus.value ||
-        isBackground) {
+    if (site.id != Constant.kDouyu ||
+        isBackground ||
+        currentLineIndex < 0 ||
+        currentLineIndex >= playUrls.length) {
       return;
     }
-
-    _preparingStandbyPlayer = true;
-    final activePlayer = player;
-    Player? standby;
-    try {
-      if (!await _refreshPlayUrl(refreshRoomDetail: true, preload: true)) {
+    final info = _activePlayUrl?.infoForUrl(playUrls[currentLineIndex]);
+    if (info == null) return;
+    final delay = PlaybackRefreshPolicy.prefetchDelay(info);
+    if (delay == null) return;
+    final context = _playContext;
+    _playUrlRefreshTimer = Timer(delay, () {
+      if (_inactive ||
+          context != _playContext ||
+          !liveStatus.value ||
+          isBackground ||
+          _handlingMediaFailure) {
         return;
       }
-      if (_playUrlRefreshTimer == null || !identical(player, activePlayer)) {
-        return;
-      }
+      // Fetch metadata only. Do not open another player or rebuild the Video.
+      unawaited(_refreshPlayUrl(refreshRoomDetail: true, preload: true));
+    });
+  }
 
-      final url = playUrls[currentLineIndex];
-      final headers = playHeaders == null
-          ? null
-          : Map<String, String>.from(playHeaders!);
-      standby = createPlayer();
-      final standbyVideoController = createVideoController(standby);
-      _standbyPlayer = standby;
-      _standbyVideoController = standbyVideoController;
-
-      await initializePlayer(standby);
-      await standby.setVolume(0);
-      await standby.open(Media(url, httpHeaders: headers));
-
-      if (!await _waitForStandbyPlayer(standby) ||
-          !identical(_standbyPlayer, standby) ||
-          !identical(player, activePlayer)) {
-        return;
-      }
-
-      _switchingStandbyPlayer = true;
-      final nextVideoController = _standbyVideoController;
-      _standbyPlayer = null;
-      _standbyVideoController = null;
-      if (nextVideoController == null) {
-        return;
-      }
-      _cancelStandbySubscriptions();
-      await replacePlayer(standby, nextVideoController);
-      _hasPreloadedPlayUrl = false;
-      mediaErrorRetryCount = 0;
-      Log.d("斗鱼播放地址已提前切换");
-      standby = null;
-    } catch (e) {
-      Log.logPrint(e);
-    } finally {
-      _preparingStandbyPlayer = false;
-      _switchingStandbyPlayer = false;
-      if (standby != null) {
-        if (identical(_standbyPlayer, standby)) {
-          _disposeStandbyPlayer();
-        } else {
-          unawaited(standby.dispose());
-        }
-      }
+  void _stopPlayUrlRefreshTimer({bool invalidateRequests = true}) {
+    _playUrlRefreshTimer?.cancel();
+    _playUrlRefreshTimer = null;
+    _healthyPlaybackTimer?.cancel();
+    if (invalidateRequests) {
+      _playGeneration++;
+      _recovery.reset();
+      _retryDelayTimer?.cancel();
+      _retryDelayTimer = null;
+      _retryDelay?.complete();
+      _retryDelay = null;
+      _playbackHealth.reset();
+      _recoveryReason = 'selection';
+      _lastOpenedAt = null;
+      _pendingFailureContext = null;
+      _deferredFailureTimer?.cancel();
     }
+    _preloadedPlayUrl = null;
+    _preloadedAt = null;
+    _preloadedContext = null;
   }
 
   bool _consumePreloadedPlayUrl() {
-    if (!_hasPreloadedPlayUrl) {
+    final snapshot = _preloadedPlayUrl;
+    final sources = snapshot?.urls;
+    final received = _preloadedAt;
+    final context = _preloadedContext;
+    _preloadedPlayUrl = null;
+    _preloadedAt = null;
+    _preloadedContext = null;
+    if (sources == null ||
+        received == null ||
+        context != _playContext ||
+        sources.urls.isEmpty) {
       return false;
     }
-    _hasPreloadedPlayUrl = false;
+    final line = _selectSourceLine(sources);
+    if (!PlaybackRefreshPolicy.canUsePrefetched(
+        sources.infoForUrl(sources.urls[line]), received)) {
+      return false;
+    }
+    _applyPlayUrl(snapshot!);
     return true;
   }
 
-  /// 重新请求播放地址。斗鱼返回的播放地址只有短期有效，播放器重试时
-  /// 不能继续使用之前缓存的 URL。
-  Future<bool> _refreshPlayUrl({
-    bool refreshRoomDetail = false,
-    bool preload = false,
-  }) async {
-    if (detail.value == null ||
-        currentQuality < 0 ||
-        currentQuality >= qualites.length ||
-        _refreshingPlayUrl) {
-      return false;
-    }
+  void _applyPlayUrl(PlaybackSource snapshot) {
+    final sources = snapshot.urls;
+    final index = _selectSourceLine(sources);
+    _activePlayUrl = sources;
+    detail.value = snapshot.detail;
+    online.value = snapshot.detail.online;
+    qualites.assignAll(snapshot.qualities);
+    currentQuality = snapshot.qualityIndex;
+    playUrls.value = List.of(sources.urls);
+    playHeaders = sources.headers;
+    currentLineIndex = index;
+    _updateSourceInfo();
+  }
 
-    _refreshingPlayUrl = true;
+  void _updateSourceInfo() {
+    if (currentLineIndex < 0 || currentLineIndex >= playUrls.length) return;
+    currentLineInfo.value = '线路${currentLineIndex + 1}';
+    final requested = currentQuality >= 0 && currentQuality < qualites.length
+        ? qualites[currentQuality].quality
+        : '';
+    currentQualityInfo.value = _activePlayUrl
+            ?.infoForUrl(playUrls[currentLineIndex])
+            .displayedQuality(requested) ??
+        requested;
+  }
+
+  Future<PlaybackSource?> _fetchPlayUrl(
+      String context, bool refreshRoomDetail) async {
+    final requestedSite = site.liveSite;
+    final selectedQuality = qualites[currentQuality];
     try {
-      if (!preload) {
-        _hasPreloadedPlayUrl = false;
+      final PlaybackSource? snapshot;
+      if (refreshRoomDetail) {
+        snapshot = await PlaybackSource.refresh(
+            requestedSite, roomId, selectedQuality);
+      } else {
+        final requestedDetail = detail.value!;
+        final qualities = List<LivePlayQuality>.of(qualites);
+        final index = currentQuality;
+        final urls = await requestedSite.getPlayUrls(
+            detail: requestedDetail, quality: selectedQuality);
+        snapshot = PlaybackSource(
+            detail: requestedDetail,
+            qualities: qualities,
+            qualityIndex: index,
+            urls: urls);
       }
-      // 斗鱼的 anti-code 也带有时间戳，播放地址过期时一起更新房间签名。
-      if (refreshRoomDetail && site.id == Constant.kDouyu) {
-        final latestDetail =
-            await site.liveSite.getRoomDetail(roomId: roomId);
-        if (!latestDetail.status && !latestDetail.isRecord) {
-          return false;
-        }
-        detail.value = latestDetail;
-        online.value = latestDetail.online;
+      if (snapshot == null ||
+          _inactive ||
+          context != _playContext ||
+          snapshot.urls.urls.isEmpty) {
+        return null;
       }
-
-      final oldLineIndex = currentLineIndex;
-      final playUrl = await site.liveSite.getPlayUrls(
-        detail: detail.value!,
-        quality: qualites[currentQuality],
-      );
-      if (playUrl.urls.isEmpty) {
-        return false;
+      if (snapshot.urls.accountSessionVersion != null &&
+          snapshot.urls.accountSessionVersion !=
+              (requestedSite.accountSession?.version ?? 0)) {
+        return null;
       }
-
-      playUrls.value = playUrl.urls;
-      playHeaders = playUrl.headers;
-      currentLineIndex = oldLineIndex >= 0 && oldLineIndex < playUrls.length
-          ? oldLineIndex
-          : 0;
-      currentLineInfo.value = "线路${currentLineIndex + 1}";
-      _hasPreloadedPlayUrl = preload;
-      return true;
+      return snapshot;
     } catch (e) {
       Log.logPrint(e);
-      return false;
-    } finally {
-      _refreshingPlayUrl = false;
+      return null;
     }
+  }
+
+  /// Share a pending fetch within one room/quality/account revision only.
+  Future<bool> _refreshPlayUrl(
+      {bool refreshRoomDetail = false, bool preload = false}) async {
+    if (_inactive ||
+        detail.value == null ||
+        currentQuality < 0 ||
+        currentQuality >= qualites.length) {
+      return false;
+    }
+    final context = _playContext;
+    final Future<PlaybackSource?> request;
+    if (_pendingPlayContext == context && _pendingPlayUrl != null) {
+      request = _pendingPlayUrl!;
+    } else {
+      request = _fetchPlayUrl(context, refreshRoomDetail);
+      _pendingPlayUrl = request;
+      _pendingPlayContext = context;
+    }
+    try {
+      final sources = await request;
+      if (sources == null || _inactive || context != _playContext) return false;
+      if (preload) {
+        _preloadedPlayUrl = sources;
+        _preloadedAt = DateTime.now();
+        _preloadedContext = context;
+      } else {
+        _preloadedPlayUrl = null;
+        _preloadedAt = null;
+        _preloadedContext = null;
+        _applyPlayUrl(sources);
+      }
+      return true;
+    } finally {
+      if (identical(_pendingPlayUrl, request)) {
+        _pendingPlayUrl = null;
+        _pendingPlayContext = null;
+      }
+    }
+  }
+
+  void _observeHealthyPlayback() {
+    _healthyPlaybackTimer?.cancel();
+    _playbackHealth.reset();
+    final context = _playContext;
+    final sequence = _sourceSequence;
+    _healthyPlaybackTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (_inactive || context != _playContext || sequence != _sourceSequence) {
+        timer.cancel();
+        return;
+      }
+      final state = player.state;
+      final health = _playbackHealth.sample(
+        now: playbackNow,
+        position: state.position,
+        playing: state.playing,
+        buffering: state.buffering,
+        completed: state.completed,
+        suspended: isBackground || _openingContext != null,
+      );
+      if (health.stable && _recovery.attempts > 0) {
+        _logPlayback('stable');
+        _recovery.reset(clearLines: false);
+      }
+      // Continue observing after the initial healthy minute: decode failures
+      // in a long session may never emit media_kit's stream.error or EOF.
+      if (health.decoderStalled &&
+          !_handlingMediaFailure &&
+          !_recovery.stopped) {
+        _queueMediaFailure(reason: 'decoder-stall', confirmed: true);
+      }
+    });
+    _startPlayUrlRefreshTimer();
+  }
+
+  @override
+  void mediaDecoderError() {
+    if (_inactive ||
+        isBackground ||
+        !liveStatus.value ||
+        _openingContext != null ||
+        _handlingMediaFailure ||
+        !player.state.playing) {
+      return;
+    }
+    _playbackHealth.decoderError(playbackNow);
   }
 
   Future<void> changePlayLine(int index) async {
-    _disposeStandbyPlayer();
-    _hasPreloadedPlayUrl = false;
+    if (_inactive || index < 0 || index >= playUrls.length) return;
+    _stopPlayUrlRefreshTimer();
+    final context = _playContext;
+    final oldLineIndex = currentLineIndex;
     currentLineIndex = index;
-    //重置错误次数
-    mediaErrorRetryCount = 0;
+    _recovery.reset();
+    // An unused alternative may have expired while the active line stayed live.
+    // Obtain fresh sources for every explicit line switch.
+    if (!await _refreshPlayUrl(refreshRoomDetail: true)) {
+      if (!_inactive && context == _playContext) {
+        currentLineIndex = oldLineIndex;
+        _updateSourceInfo();
+        _observeHealthyPlayback();
+        SmartDialog.showToast('无法读取新线路，请重试');
+      }
+      return;
+    }
+    if (_inactive || context != _playContext) return;
     await setPlayer();
   }
 
-  Future<void> setPlayer() async {
-    currentLineInfo.value = "线路${currentLineIndex + 1}";
-    errorMsg.value = "";
-    // 初始化播放器并设置 ao 参数
-    await initializePlayer();
-    await player.open(
-      Media(
-        playUrls[currentLineIndex],
-        httpHeaders: playHeaders,
-      ),
-    );
+  Future<void> initPlaylist() => setPlayer();
 
-    Log.d("播放链接\r\n：${playUrls[currentLineIndex]}");
+  Future<void> setPlayer() async {
+    if (_inactive ||
+        currentLineIndex < 0 ||
+        currentLineIndex >= playUrls.length) {
+      return;
+    }
+    final context = _playContext;
+    final targetPlayer = player;
+    var url = playUrls[currentLineIndex];
+    final media = Media(url, httpHeaders: playHeaders);
+    bool isCurrent() =>
+        !_inactive &&
+        context == _playContext &&
+        identical(player, targetPlayer);
+    try {
+      await _playerCommands.run(
+          isCurrent: isCurrent,
+          command: () async {
+            _openingContext = context;
+            _sourceSequence++;
+            _playbackHealth.reset();
+            _deferredFailureTimer?.cancel();
+            try {
+              await initializePlayer(targetPlayer);
+              if (!isCurrent()) return;
+              errorMsg.value = '';
+              // Keep a single source open, so native playlist auto-advance cannot
+              // silently change the selected CDN, expiry or displayed quality.
+              _logPlayback('open');
+              await targetPlayer.open(media);
+              if (!isCurrent()) return;
+              _lastOpenedAt = playbackNow;
+              _updateSourceInfo();
+              _observeHealthyPlayback();
+            } finally {
+              if (_openingContext == context) _openingContext = null;
+              if (_pendingFailureContext == context) {
+                _pendingFailureContext = null;
+                if (isCurrent()) {
+                  _scheduleFailureCheck(context, _sourceSequence);
+                }
+              }
+            }
+          });
+    } catch (e) {
+      if (isCurrent()) {
+        errorMsg.value = '播放中断，请刷新重试';
+        _lastOpenedAt = playbackNow;
+        _recoveryReason = 'open-error';
+        _scheduleFailureCheck(context, _sourceSequence, force: true);
+      }
+      Log.logPrint(e);
+    }
   }
 
-  int mediaErrorRetryCount = 0;
+  int get mediaErrorRetryCount => _recovery.attempts;
+
+  DateTime get playbackNow => DateTime.now();
+
+  void _logPlayback(String event) {
+    final state = player.state;
+    final info = currentLineIndex >= 0 && currentLineIndex < playUrls.length
+        ? _activePlayUrl?.infoForUrl(playUrls[currentLineIndex])
+        : null;
+    final age = info?.fetchedAt == null
+        ? null
+        : playbackNow.difference(info!.fetchedAt!).inSeconds;
+    Log.d(
+        '[Playback] $event site=${site.id} room=$roomId source=$_sourceSequence '
+        'line=${_lineIdentity ?? "unknown"} quality=${currentQualityInfo.value} '
+        'reason=$_recoveryReason attempt=${_recovery.attempts} '
+        'recurring=${_recovery.hasRecurringFailure(_lineIdentity, playbackNow)} '
+        'selection=${_recovery.selectionReason} candidates=${playUrls.length} '
+        'urlAgeSeconds=$age expiresInSeconds=${info?.expiresInSeconds} '
+        'accountAttached=${site.liveSite.accountSession != null} '
+        'positionMs=${state.position.inMilliseconds} '
+        'playing=${state.playing} buffering=${state.buffering} '
+        'completed=${state.completed}');
+  }
+
+  int _selectSourceLine(LivePlayUrl sources) {
+    final identity = _lineIdentity;
+    return _handlingMediaFailure
+        ? _recovery.selectLine(
+            sources.urls.map(sources.identityForUrl).toList(),
+            identity,
+            playbackNow)
+        : sources.indexForIdentity(identity);
+  }
 
   /// 播放器可能同时报告 error 和 completed，避免同一次断流触发两轮重试。
-  bool _handlingMediaFailure = false;
+  String? _failureContext;
+  bool get _handlingMediaFailure => _failureContext == _playContext;
 
   Future<bool?> _getLiveStatus() async {
     try {
@@ -489,70 +641,136 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     }
   }
 
-  Future<bool> _refreshAndResume() async {
-    final status = await _getLiveStatus();
-    if (status == false) {
-      liveStatus.value = false;
-      return true;
-    }
-
-    if (!_consumePreloadedPlayUrl() &&
-        !await _refreshPlayUrl(refreshRoomDetail: true)) {
-      return false;
-    }
-    mediaErrorRetryCount = 0;
-    await setPlayer();
-    return true;
+  Future<void> _waitForRetry(Duration duration) {
+    if (duration == Duration.zero) return Future.value();
+    final completion = Completer<void>();
+    _retryDelay = completion;
+    _retryDelayTimer = Timer(duration, () {
+      if (identical(_retryDelay, completion)) {
+        _retryDelay = null;
+        _retryDelayTimer = null;
+      }
+      completion.complete();
+    });
+    return completion.future;
   }
 
-  Future<void> _handleMediaFailure({String? error}) async {
-    if (_handlingMediaFailure) {
+  Future<void> _handleMediaFailure() async {
+    if (_handlingMediaFailure ||
+        _recovery.stopped ||
+        _inactive ||
+        _roomLoad != null ||
+        !liveStatus.value) {
       return;
     }
-    _handlingMediaFailure = true;
+    final context = _playContext;
+    _failureContext = context;
+    _recovery.failed(_lineIdentity, playbackNow);
+    _logPlayback('recover');
+    _healthyPlaybackTimer?.cancel();
     try {
-      if (mediaErrorRetryCount < 2) {
-        final retryType = error == null ? "播放结束" : "播放失败";
-        Log.d("$retryType，尝试第${mediaErrorRetryCount + 1}次刷新");
-        if (mediaErrorRetryCount == 1) {
-          //延迟一秒再刷新
-          await Future.delayed(const Duration(seconds: 1));
-        }
-        mediaErrorRetryCount += 1;
-        //刷新播放地址后再重试，避免继续使用已过期的斗鱼 URL
-        if (!_consumePreloadedPlayUrl()) {
-          await _refreshPlayUrl(refreshRoomDetail: true);
-        }
-        await setPlayer();
-        return;
-      }
-
-      Log.d("播放结束");
-      // 遍历线路，如果全部链接都断开，先确认直播状态再显示未开播。
-      if (playUrls.length - 1 == currentLineIndex) {
-        if (await _refreshAndResume()) {
+      final maxAttempts = (playUrls.length + 1).clamp(2, 5);
+      while (_recovery.attempts < maxAttempts) {
+        final delay = _recovery.retryDelay;
+        await _waitForRetry(delay);
+        if (_inactive || context != _playContext) return;
+        _recovery.attempts++;
+        final refreshed = _consumePreloadedPlayUrl() ||
+            await _refreshPlayUrl(refreshRoomDetail: true);
+        if (_inactive || context != _playContext) return;
+        if (refreshed) {
+          await setPlayer();
           return;
         }
-        if (error != null) {
-          errorMsg.value = "播放失败";
-          SmartDialog.showToast("播放失败:$error");
-        }
-      } else {
-        await changePlayLine(currentLineIndex + 1);
+        // Do not reopen a known stale URL when a fresh request failed.
       }
+      _recovery.stopped = true;
+      _logPlayback('exhausted');
+      final status = await _getLiveStatus();
+      if (_inactive || context != _playContext) return;
+      if (status == false) {
+        liveStatus.value = false;
+        _stopPlayUrlRefreshTimer();
+      } else {
+        errorMsg.value = '播放中断，请刷新重试';
+      }
+    } catch (e) {
+      if (!_inactive && context == _playContext) {
+        errorMsg.value = '播放中断，请刷新重试';
+      }
+      Log.logPrint(e);
     } finally {
-      _handlingMediaFailure = false;
+      if (_failureContext == context) _failureContext = null;
+    }
+  }
+
+  // EOF is terminal. Other native errors can be recoverable; observe actual
+  // progress before reopening. Old-source events during open are coalesced.
+  void _queueMediaFailure({required String reason, bool confirmed = false}) {
+    if (_inactive || !liveStatus.value || _recovery.stopped) return;
+    final context = _playContext;
+    final justOpened = _lastOpenedAt != null &&
+        playbackNow.difference(_lastOpenedAt!) < const Duration(seconds: 1);
+    _recoveryReason = reason;
+    if (_openingContext == context) {
+      _pendingFailureContext = context;
+      return;
+    }
+    if (justOpened) {
+      _scheduleFailureCheck(context, _sourceSequence);
+      return;
+    }
+    if (_handlingMediaFailure) return;
+    if (!confirmed) {
+      _scheduleFailureCheck(context, _sourceSequence);
+      return;
+    }
+    unawaited(_handleMediaFailure());
+  }
+
+  void _scheduleFailureCheck(String context, int sequence,
+      {bool force = false, DateTime? observedAt}) {
+    if ((_deferredFailureTimer?.isActive ?? false) && !force) return;
+    _deferredFailureTimer?.cancel();
+    // Sample only after open completed: a new source resets its position.
+    final position = player.state.position;
+    final firstObserved = observedAt ?? playbackNow;
+    _deferredFailureTimer = Timer(const Duration(seconds: 3), () {
+      _deferredFailureTimer = null;
+      if (_inactive ||
+          context != _playContext ||
+          sequence != _sourceSequence ||
+          _recovery.stopped) {
+        return;
+      }
+      if (_roomLoad != null || _openingContext == context) {
+        _scheduleFailureCheck(context, sequence,
+            force: force, observedAt: firstObserved);
+      } else if (!force &&
+          !player.state.completed &&
+          player.state.buffering &&
+          playbackNow.difference(firstObserved) < const Duration(seconds: 12)) {
+        _scheduleFailureCheck(context, sequence, observedAt: firstObserved);
+      } else if (force ||
+          player.state.completed ||
+          (player.state.playing &&
+              !isBackground &&
+              player.state.position <= position)) {
+        unawaited(_handleMediaFailure());
+      }
+    });
+  }
+
+  @override
+  void mediaEnd() {
+    if (player.state.completed) {
+      _queueMediaFailure(reason: 'eof', confirmed: true);
     }
   }
 
   @override
-  void mediaEnd() async {
-    await _handleMediaFailure();
-  }
-
-  @override
-  void mediaError(String error) async {
-    await _handleMediaFailure(error: error);
+  void mediaError(String error) {
+    _queueMediaFailure(reason: 'native-error');
   }
 
   /// 添加历史记录
@@ -622,6 +840,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     _stopPlayUrlRefreshTimer();
     rxSite.value = site;
     rxRoomId.value = roomId;
+    _knownAccountRevision = _accountRevision;
 
     // 清除全部消息
     liveDanmaku.stop();
@@ -631,10 +850,14 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     // 重新设置LiveDanmaku
     liveDanmaku = site.liveSite.getDanmaku();
 
-    // 停止播放
-    await player.stop();
-
-    // 刷新信息
+    // Serialize stop with any previous open, and ignore a superseded reset.
+    final context = _roomContext;
+    final targetPlayer = player;
+    await _playerCommands.run(
+      isCurrent: () => !_inactive && context == _roomContext,
+      command: targetPlayer.stop,
+    );
+    if (_inactive || context != _roomContext) return;
     loadData();
   }
 
@@ -692,21 +915,31 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       Log.d("进入后台");
       //进入后台，关闭弹幕
       danmakuController?.clear();
-      _disposeStandbyPlayer();
+      // Pending initial loads remain valid while background playback is allowed.
+      _stopPlayUrlRefreshTimer(invalidateRequests: false);
       isBackground = true;
     } else
     //返回前台
     if (state == AppLifecycleState.resumed) {
       Log.d("返回前台");
       isBackground = false;
-      if (site.id == Constant.kDouyu) {
-        unawaited(_prepareStandbyPlayer());
+      // Desktop focus changes also emit resumed, without a preceding pause.
+      // Preserve the measured healthy interval when its observer is still live.
+      if (!(_healthyPlaybackTimer?.isActive ?? false) &&
+          !_handlingMediaFailure &&
+          !_recovery.stopped &&
+          _sourceSequence > 0) {
+        _observeHealthyPlayback();
       }
     }
   }
 
   @override
   void onClose() {
+    _closing = true;
+    WidgetsBinding.instance.removeObserver(this);
+    _clockTimer?.cancel();
+    _accountWorker?.dispose();
     _stopPlayUrlRefreshTimer();
     liveDanmaku.stop();
 

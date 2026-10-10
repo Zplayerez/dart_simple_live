@@ -171,28 +171,26 @@ class LocalStorageService extends GetxService {
   late Box settingsBox;
   late Box<String> shieldBox;
 
-  Future init() async {
-    settingsBox = await Hive.openBox(
-      "LocalStorage",
-    );
-    shieldBox = await Hive.openBox(
-      "DanmuShield",
-    );
+  Future<void> init() async {
+    await Future.wait([
+      Hive.openBox("LocalStorage").then((box) => settingsBox = box),
+      Hive.openBox<String>("DanmuShield").then((box) => shieldBox = box),
+    ]);
   }
 
   T getValue<T>(dynamic key, T defaultValue) {
     try {
       var value = settingsBox.get(key, defaultValue: defaultValue) as T;
-      Log.d("Get LocalStorage：$key\r\n$value");
+      Log.d("Get LocalStorage：$key");
       return value;
     } catch (e) {
-      Log.logPrint(e);
+      Log.d("LocalStorage read failed");
       return defaultValue;
     }
   }
 
   Future setValue<T>(dynamic key, T value) async {
-    Log.d("Set LocalStorage：$key\r\n$value");
+    Log.d("Set LocalStorage：$key");
     return await settingsBox.put(key, value);
   }
 

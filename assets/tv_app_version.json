@@ -1,7 +1,7 @@
 {
-    "version": "1.6.6",
-    "version_num": 10606,
-    "version_desc": "- 修复斗鱼直播播放地址过期后反复刷新",
-    "prerelease":false,
-    "download_url": "https://github.com/xiaoyaocz/dart_simple_live/releases"
+  "version": "1.6.10",
+  "version_num": 10610,
+  "version_desc": "- 斗鱼、虎牙、抖音改用官方账号接口验证登录，显示实际验证结果\n- 修正斗鱼网站登录状态误判，验证失败时保留登录信息并支持重新验证\n- 正确读取斗鱼实际画质、线路和播放有效期，原画无时限线路不定时刷新",
+  "prerelease": false,
+  "download_url": "https://github.com/Zplayerez/dart_simple_live/releases"
 }

@@ -1,37 +1,78 @@
-name: app-build-action
+name: App release build
 #推送Tag时触发
 on:
   push:
     tags:
       - "v*"
 jobs:
+  verify-version:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Check tag and application version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PYTHON'
+          import json
+          import os
+          import re
+          from pathlib import Path
+          pubspec = Path('simple_live_app/pubspec.yaml').read_text()
+          version, build = re.search(r'^version: (.+)\+(\d+)$', pubspec, re.M).groups()
+          metadata = json.loads(Path('assets/app_version.json').read_text())
+          assert os.environ['RELEASE_TAG'] == f'v{version}', 'Tag and app version differ'
+          assert metadata['version'] == version, 'Update metadata version differs'
+          assert metadata['version_num'] == int(build), 'Update metadata build differs'
+          print(f'Release version verified: {version}+{build}')
+          PYTHON
+      - name: Check APK certificate parser
+        run: python3 -m unittest discover -s .github/scripts -p 'test_*.py'
+
   build-mac-ios-android:
-    runs-on: macos-latest
-    env:
-      HAS_ANDROID_KEYSTORE: ${{ secrets.KEYSTORE_BASE64 != '' }}
+    needs: verify-version
+    runs-on: macos-14
     permissions:
       contents: write
     steps:
       #签出代码
       - uses: actions/checkout@v4
         with:
-          ref: master
+          ref: ${{ github.sha }}
 
       #APK签名设置
-      - name: Download Android keystore
-        id: android_keystore
-        if: ${{ env.HAS_ANDROID_KEYSTORE == 'true' }}
-        uses: timheuer/base64-to-file@v1.2
-        with:
-          fileName: keystore.jks
-          encodedString: ${{ secrets.KEYSTORE_BASE64 }}
-      - name: Create key.properties
-        if: ${{ env.HAS_ANDROID_KEYSTORE == 'true' }}
+      - name: Configure Android release signing
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
         run: |
-          echo "storeFile=${{ steps.android_keystore.outputs.filePath }}" > simple_live_app/android/key.properties
-          echo "storePassword=${{ secrets.STORE_PASSWORD }}" >> simple_live_app/android/key.properties
-          echo "keyPassword=${{ secrets.KEY_PASSWORD }}" >> simple_live_app/android/key.properties
-          echo "keyAlias=${{ secrets.KEY_ALIAS }}" >> simple_live_app/android/key.properties
+          python3 - <<'PYTHON'
+          import base64
+          import os
+          from pathlib import Path
+          names = ['ANDROID_KEYSTORE_BASE64', 'ANDROID_STORE_PASSWORD', 'ANDROID_KEY_PASSWORD', 'ANDROID_KEY_ALIAS']
+          missing = [name for name in names if not os.environ.get(name)]
+          if missing:
+              raise SystemExit('Missing Android signing configuration: ' + ', '.join(missing))
+          os.umask(0o077)
+          keystore = Path(os.environ['RUNNER_TEMP']) / 'android-release.jks'
+          keystore.write_bytes(base64.b64decode(os.environ['ANDROID_KEYSTORE_BASE64'], validate=True))
+          properties = {
+              'storeFile': str(keystore),
+              'storePassword': os.environ['ANDROID_STORE_PASSWORD'],
+              'keyPassword': os.environ['ANDROID_KEY_PASSWORD'],
+              'keyAlias': os.environ['ANDROID_KEY_ALIAS'],
+          }
+          def escape(value):
+              return value.replace('\\', '\\\\').replace('\n', '\\n').replace('\r', '\\r')
+          Path('simple_live_app/android/key.properties').write_text(''.join(f'{key}={escape(value)}\n' for key, value in properties.items()))
+          PYTHON
 
       #设置JAVA环境
       - uses: actions/setup-java@v4
@@ -44,7 +85,7 @@ jobs:
       - name: Flutter action
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.38.x"
+          flutter-version: "3.38.10"
           cache: true
 
       # 打开MAC Desktop支持
@@ -55,7 +96,7 @@ jobs:
       - name: Restore packages
         run: |
           cd simple_live_app
-          flutter pub get
+          flutter pub get --enforce-lockfile
 
       # 安装appdmg npm install -g appdmg
       - name: Install appdmg
@@ -63,21 +104,25 @@ jobs:
 
       # 设置flutter_distributor环境
       - name: Install flutter_distributor
-        run: dart pub global activate flutter_distributor
+        run: dart pub global activate flutter_distributor 0.6.10
 
       #打包APK
       - name: Build APK
-        if: ${{ env.HAS_ANDROID_KEYSTORE == 'true' }}
+        id: build_apk
         run: |
           cd simple_live_app
           flutter build apk --release --split-per-abi
 
+      - name: Verify Android release APKs
+        run: python3 .github/scripts/verify_android_release.py simple_live_app
+
       #上传APK至Artifacts
       - name: Upload APK to Artifacts
-        if: ${{ env.HAS_ANDROID_KEYSTORE == 'true' }}
+        if: ${{ !cancelled() && steps.build_apk.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         with:
           name: android
+          if-no-files-found: error
           path: |
             simple_live_app/build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk
             simple_live_app/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
@@ -134,6 +179,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           name: "${{ steps.version.outputs.VERSION }}"
+          draft: true
           generate_release_notes: true
           prerelease: ${{ contains(github.ref, 'beta') || contains(github.ref, 'alpha') }}
           token: ${{ secrets.TOKEN || github.token }}
@@ -149,25 +195,26 @@ jobs:
 
   # 打包Linux
   build-linux:
-    runs-on: ubuntu-22.04
+    needs: verify-version
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
       # 签出代码
       - uses: actions/checkout@v4
         with:
-          ref: master
+          ref: ${{ github.sha }}
       # 设置Flutter环境
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.38.x"
+          flutter-version: "3.38.10"
           cache: true
       # 安装依赖
       - name: Update apt-get
         run: sudo apt-get update
       - name: Install Dependencies
-        run: sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libasound2-dev libmpv-dev mpv
+        run: sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev libsecret-1-dev liblzma-dev libasound2-dev libmpv-dev mpv
       # 打开Linux Desktop支持
       - name: Enable Flutter Desktop
         run: flutter config --enable-linux-desktop
@@ -175,10 +222,10 @@ jobs:
       - name: Restore Packages
         run: |
           cd simple_live_app
-          flutter pub get
+          flutter pub get --enforce-lockfile
       # 设置flutter_distributor环境
       - name: Install flutter_distributor
-        run: dart pub global activate flutter_distributor
+        run: dart pub global activate flutter_distributor 0.6.10
       # build Linux ZIP\DMG
       - name: Build Linux
         run: |
@@ -205,6 +252,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           name: "${{ steps.version.outputs.VERSION }}"
+          draft: true
           generate_release_notes: true
           prerelease: ${{ contains(github.ref, 'beta') || contains(github.ref, 'alpha') }}
           token: ${{ secrets.TOKEN || github.token }}
@@ -216,6 +264,7 @@ jobs:
 
   # 打包Windows
   build-windows:
+    needs: verify-version
     runs-on: windows-2022
     permissions:
       contents: write
@@ -223,22 +272,22 @@ jobs:
       # 签出代码
       - uses: actions/checkout@v4
         with:
-          ref: master
+          ref: ${{ github.sha }}
       # 设置Flutter环境
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.38.x"
+          flutter-version: "3.38.10"
           cache: true
       - name: Enable Flutter Desktop
         run: flutter config --enable-windows-desktop
       - name: Restore Packages
         run: |
           cd simple_live_app
-          flutter pub get
+          flutter pub get --enforce-lockfile
       # 设置flutter_distributor环境
       - name: Install flutter_distributor
-        run: dart pub global activate flutter_distributor
+        run: dart pub global activate flutter_distributor 0.6.10
       # build Windows ZIP\MSIX
       - name: Build Windows
         run: |
@@ -267,6 +316,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           name: "${{ steps.version.outputs.VERSION }}"
+          draft: true
           generate_release_notes: true
           prerelease: ${{ contains(github.ref, 'beta') || contains(github.ref, 'alpha') }}
           token: ${{ secrets.TOKEN || github.token }}

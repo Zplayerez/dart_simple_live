@@ -1,13 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
-import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:get/get.dart';
 import 'package:simple_live_tv_app/app/app_focus_node.dart';
 import 'package:simple_live_tv_app/app/app_style.dart';
 import 'package:simple_live_tv_app/app/controller/app_settings_controller.dart';
 import 'package:simple_live_tv_app/app/utils.dart';
 import 'package:simple_live_tv_app/modules/settings/settings_controller.dart';
-import 'package:simple_live_tv_app/services/bilibili_account_service.dart';
+import 'package:simple_live_account/simple_live_account.dart';
+import 'package:simple_live_account/widgets/account_labels.dart';
 import 'package:simple_live_tv_app/services/follow_user_service.dart';
 import 'package:simple_live_tv_app/widgets/app_scaffold.dart';
 import 'package:simple_live_tv_app/widgets/button/highlight_button.dart';
@@ -113,19 +113,20 @@ class SettingsPage extends GetView<SettingsController> {
             ],
           ),
           Expanded(
-              child: SizedBox(
-            width: 800.w,
-            child: TabBarView(
-              controller: controller.tabController,
-              children: [
-                buildPlayerSettings(),
-                buildDanmakuSettings(),
-                buildFollowSettings(),
-                buildAccountSettings(),
-                buildAbout(),
-              ],
+            child: SizedBox(
+              width: 800.w,
+              child: TabBarView(
+                controller: controller.tabController,
+                children: [
+                  buildPlayerSettings(),
+                  buildDanmakuSettings(),
+                  buildFollowSettings(),
+                  buildAccountSettings(),
+                  buildAbout(),
+                ],
+              ),
             ),
-          )),
+          ),
         ],
       ),
     );
@@ -140,14 +141,12 @@ class SettingsPage extends GetView<SettingsController> {
             foucsNode: controller.hardwareDecodeFocusNode,
             autofocus: controller.hardwareDecodeFocusNode.isFoucsed.value,
             title: "硬件解码",
-            items: const {
-              0: "关",
-              1: "开",
-            },
+            items: const {0: "关", 1: "开"},
             value: AppSettingsController.instance.hardwareDecode.value ? 1 : 0,
             onChanged: (e) {
-              AppSettingsController.instance
-                  .setHardwareDecode(e == 1 ? true : false);
+              AppSettingsController.instance.setHardwareDecode(
+                e == 1 ? true : false,
+              );
             },
           ),
         ),
@@ -157,15 +156,13 @@ class SettingsPage extends GetView<SettingsController> {
             foucsNode: controller.compatibleModeFocusNode,
             autofocus: controller.compatibleModeFocusNode.isFoucsed.value,
             title: "兼容模式",
-            items: const {
-              0: "关",
-              1: "开",
-            },
+            items: const {0: "关", 1: "开"},
             value:
                 AppSettingsController.instance.playerCompatMode.value ? 1 : 0,
             onChanged: (e) {
-              AppSettingsController.instance
-                  .setPlayerCompatMode(e == 1 ? true : false);
+              AppSettingsController.instance.setPlayerCompatMode(
+                e == 1 ? true : false,
+              );
             },
           ),
         ),
@@ -175,13 +172,7 @@ class SettingsPage extends GetView<SettingsController> {
             foucsNode: controller.scaleFoucsNode,
             autofocus: controller.scaleFoucsNode.isFoucsed.value,
             title: "画面比例",
-            items: const {
-              0: "适应",
-              1: "拉伸",
-              2: "铺满",
-              3: "16:9",
-              4: "4:3",
-            },
+            items: const {0: "适应", 1: "拉伸", 2: "铺满", 3: "16:9", 4: "4:3"},
             value: AppSettingsController.instance.scaleMode.value,
             onChanged: (e) {
               AppSettingsController.instance.setScaleMode(e);
@@ -194,11 +185,7 @@ class SettingsPage extends GetView<SettingsController> {
             foucsNode: controller.defaultQualityFocusNode,
             autofocus: controller.defaultQualityFocusNode.isFoucsed.value,
             title: "默认清晰度",
-            items: const {
-              0: "最低画质",
-              1: "中等画质",
-              2: "最高画质",
-            },
+            items: const {0: "最低画质", 1: "中等画质", 2: "最高画质"},
             value: AppSettingsController.instance.qualityLevel.value,
             onChanged: (e) {
               AppSettingsController.instance.setQualityLevel(e);
@@ -219,16 +206,14 @@ class SettingsPage extends GetView<SettingsController> {
             autofocus:
                 controller.autoUpdateFollowEnableFocusNode.isFoucsed.value,
             title: "自动更新关注",
-            items: const {
-              0: "关",
-              1: "开",
-            },
+            items: const {0: "关", 1: "开"},
             value: AppSettingsController.instance.autoUpdateFollowEnable.value
                 ? 1
                 : 0,
             onChanged: (e) {
-              AppSettingsController.instance
-                  .setAutoUpdateFollowEnable(e == 1 ? true : false);
+              AppSettingsController.instance.setAutoUpdateFollowEnable(
+                e == 1 ? true : false,
+              );
               FollowUserService.instance.initTimer();
             },
           ),
@@ -292,10 +277,7 @@ class SettingsPage extends GetView<SettingsController> {
             foucsNode: controller.danmakuFoucsNode,
             autofocus: controller.danmakuFoucsNode.isFoucsed.value,
             title: "弹幕开关",
-            items: const {
-              0: "关",
-              1: "开",
-            },
+            items: const {0: "关", 1: "开"},
             value: AppSettingsController.instance.danmuEnable.value ? 1 : 0,
             onChanged: (e) {
               AppSettingsController.instance.setDanmuEnable(e == 1);
@@ -350,12 +332,7 @@ class SettingsPage extends GetView<SettingsController> {
             foucsNode: controller.danmakuAreaFoucsNode,
             autofocus: controller.danmakuAreaFoucsNode.isFoucsed.value,
             title: "显示区域",
-            items: {
-              0.25: "1/4",
-              0.5: "1/2",
-              0.75: "3/4",
-              1.0: "全屏",
-            },
+            items: {0.25: "1/4", 0.5: "1/2", 0.75: "3/4", 1.0: "全屏"},
             value: AppSettingsController.instance.danmuArea.value,
             onChanged: (e) {
               AppSettingsController.instance.setDanmuArea(e);
@@ -416,64 +393,27 @@ class SettingsPage extends GetView<SettingsController> {
     return ListView(
       padding: AppStyle.edgeInsetsA48,
       children: [
-        Obx(
-          () => HighlightListTile(
-            focusNode: controller.bilibiliFoucsNode,
-            autofocus: controller.bilibiliFoucsNode.isFoucsed.value,
-            title: "哔哩哔哩账号",
-            subtitle: BiliBiliAccountService.instance.logined.value
-                ? "已登录：${BiliBiliAccountService.instance.name.value}"
-                : "未登录，点击登录",
-            leading: Image.asset(
-              "assets/images/bilibili.png",
-              width: 64.w,
-              height: 64.w,
-            ),
-            onTap: controller.bilibiliTap,
-          ),
-        ),
-        AppStyle.vGap24,
-        HighlightListTile(
-          focusNode: AppFocusNode(),
-          title: "斗鱼账号",
-          subtitle: "无需登录",
-          leading: Image.asset(
-            "assets/images/douyu.png",
-            width: 64.w,
-            height: 64.w,
-          ),
-          onTap: () {
-            SmartDialog.showToast("无需登录斗鱼，您可以直接观看直播");
-          },
-        ),
-        AppStyle.vGap24,
-        HighlightListTile(
-          focusNode: AppFocusNode(),
-          title: "虎牙账号",
-          subtitle: "无需登录",
-          leading: Image.asset(
-            "assets/images/huya.png",
-            width: 64.w,
-            height: 64.w,
-          ),
-          onTap: () {
-            SmartDialog.showToast("无需登录虎牙，您可以直接观看直播");
-          },
-        ),
-        AppStyle.vGap24,
-        HighlightListTile(
-          focusNode: AppFocusNode(),
-          title: "抖音账号",
-          subtitle: "无需登录",
-          leading: Image.asset(
-            "assets/images/douyin.png",
-            width: 64.w,
-            height: 64.w,
-          ),
-          onTap: () {
-            SmartDialog.showToast("无需登录抖音，您可以直接观看直播");
-          },
-        )
+        for (final siteId in accountPlatformIds) ...[
+          Obx(() {
+            final node = controller.accountFocusNode(siteId);
+            final state = PlatformAccountManager.instance.account(siteId);
+            return HighlightListTile(
+              focusNode: node,
+              autofocus: node.isFoucsed.value,
+              title: '${accountPlatformName(siteId)}账号',
+              subtitle: accountSummary(state),
+              leading: Image.asset(
+                'assets/images/$siteId.png',
+                width: 64.w,
+                height: 64.w,
+              ),
+              onTap: () {
+                controller.openAccount(siteId);
+              },
+            );
+          }),
+          AppStyle.vGap24,
+        ],
       ],
     );
   }
@@ -486,7 +426,7 @@ class SettingsPage extends GetView<SettingsController> {
           focusNode: controller.versionFocusNode,
           title: "版本",
           subtitle: "v${Utils.packageInfo.version}",
-          onTap: ()=>{},
+          onTap: () => {},
         ),
       ],
     );

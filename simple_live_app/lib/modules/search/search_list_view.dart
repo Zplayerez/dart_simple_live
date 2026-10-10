@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:simple_live_app/app/app_style.dart';
 import 'package:simple_live_app/modules/search/search_list_controller.dart';
+import 'search_recovery_actions.dart';
 import 'package:simple_live_app/routes/app_navigation.dart';
 import 'package:simple_live_app/widgets/keep_alive_wrapper.dart';
 import 'package:simple_live_app/widgets/live_room_card.dart';
@@ -22,7 +23,7 @@ class SearchListView extends StatelessWidget {
 
     var userRowCount = MediaQuery.of(context).size.width ~/ 500;
     if (userRowCount < 1) userRowCount = 1;
-    return KeepAliveWrapper(
+    final resultsView = KeepAliveWrapper(
       child: Obx(
         () => controller.searchMode.value == 0
             ? PageGridView(
@@ -42,7 +43,7 @@ class SearchListView extends StatelessWidget {
                 crossAxisSpacing: 12,
                 crossAxisCount: userRowCount,
                 pageController: controller,
-                firstRefresh: true,
+                firstRefresh: false,
                 itemBuilder: (_, i) {
                   var item = controller.list[i] as LiveAnchorItem;
 
@@ -85,5 +86,14 @@ class SearchListView extends StatelessWidget {
               ),
       ),
     );
+    return Column(children: [
+      if (controller.site.id == 'douyin')
+        Obx(() => controller.pageError.value
+            ? SearchRecoveryActions(
+                keyword: controller.keyword,
+                anchors: controller.searchMode.value == 1)
+            : const SizedBox.shrink()),
+      Expanded(child: resultsView),
+    ]);
   }
 }

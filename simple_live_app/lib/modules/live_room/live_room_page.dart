@@ -14,6 +14,7 @@ import 'package:simple_live_app/app/utils.dart';
 import 'package:simple_live_app/modules/live_room/live_room_controller.dart';
 import 'package:simple_live_app/modules/live_room/player/player_controls.dart';
 import 'package:simple_live_app/services/follow_service.dart';
+import 'package:simple_live_app/services/playback_preferences.dart';
 import 'package:simple_live_app/widgets/desktop_refresh_button.dart';
 import 'package:simple_live_app/widgets/follow_user_item.dart';
 import 'package:simple_live_app/widgets/keep_alive_wrapper.dart';
@@ -709,6 +710,44 @@ class LiveRoomPage extends GetView<LiveRoomController> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              Obx(() => SwitchListTile(
+                    title:
+                        Text(controller.smoothPlayback.value ? '流畅优先' : '画质优先'),
+                    subtitle: Text(controller.smoothPlayback.value
+                        ? '同画质线路多次失败后，允许自动降低画质'
+                        : '优先尝试同画质线路，不自动降低所选画质'),
+                    value: controller.smoothPlayback.value,
+                    onChanged: (value) {
+                      controller.smoothPlayback.value = value;
+                      PlaybackPreferences.save(controller.site.id,
+                          controller.roomId, {'smooth': value});
+                    },
+                  )),
+              ListTile(
+                  title: const Text('将当前偏好用于此平台'),
+                  subtitle: const Text('保存当前画质和播放策略，直播间可单独调整'),
+                  onTap: () {
+                    PlaybackPreferences.save(
+                        controller.site.id,
+                        controller.roomId,
+                        {
+                          'quality': controller.currentQuality >= 0
+                              ? controller
+                                  .qualites[controller.currentQuality].quality
+                              : null,
+                          'smooth': controller.smoothPlayback.value,
+                        },
+                        forPlatform: true);
+                  }),
+              Obx(() => controller.qualityNotice.value.isEmpty
+                  ? const SizedBox.shrink()
+                  : ListTile(
+                      title: Text(controller.qualityNotice.value),
+                      trailing: TextButton(
+                          onPressed: controller.restorePreferredQuality,
+                          child: const Text('恢复偏好画质')))),
+              SettingsAction(title: '当前平台账号', onTap: controller.openAccount),
+              AppStyle.divider,
               SettingsAction(
                 title: "关键词屏蔽",
                 onTap: controller.showDanmuShield,

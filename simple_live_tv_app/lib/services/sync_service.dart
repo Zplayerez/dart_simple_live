@@ -1,4 +1,6 @@
 import 'dart:convert';
+
+import 'package:simple_live_account/simple_live_account.dart';
 import 'dart:io';
 
 import 'package:device_info_plus/device_info_plus.dart';
@@ -12,7 +14,6 @@ import 'package:simple_live_tv_app/app/log.dart';
 import 'package:simple_live_tv_app/app/utils.dart';
 import 'package:simple_live_tv_app/models/db/follow_user.dart';
 import 'package:simple_live_tv_app/models/db/history.dart';
-import 'package:simple_live_tv_app/services/bilibili_account_service.dart';
 import 'package:simple_live_tv_app/services/db_service.dart';
 import 'package:udp/udp.dart';
 import 'package:shelf/shelf.dart' as shelf;
@@ -22,6 +23,55 @@ import 'package:uuid/uuid.dart';
 
 class SyncService extends GetxService {
   static SyncService get instance => Get.find<SyncService>();
+
+  AccountPairingHost? _accountPairing;
+  int _pairingGeneration = 0;
+
+  Future<AccountPairingReceiver> startAccountPairing(String siteId,
+      Future<bool> Function() confirm, void Function(String) onStatus) async {
+    if (!httpRunning.value) throw StateError('本机同步服务不可用');
+    final generation = ++_pairingGeneration;
+    final addresses = (await getLocalIP()).split(';');
+    if (generation != _pairingGeneration) throw StateError('配对已取消');
+    final address = addresses
+        .firstWhere((value) => InternetAddress.tryParse(value) != null);
+    _accountPairing ??= AccountPairingHost(PlatformAccountManager.instance);
+    return _accountPairing!.start(
+        Uri(
+            scheme: 'http',
+            host: address,
+            port: httpPort,
+            path: '/account-pairing'),
+        siteId,
+        confirm: confirm,
+        onStatus: onStatus);
+  }
+
+  void cancelAccountPairing() {
+    _pairingGeneration++;
+    _accountPairing?.cancel();
+  }
+
+  Future<shelf.Response> _receivePairedAccount(shelf.Request request) async {
+    final host = _accountPairing;
+    if (host == null ||
+        (request.contentLength ?? 0) > accountPairingMaxPayloadBytes) {
+      return toJsonResponse({'status': false, 'message': '请在账号管理中打开配对页面'});
+    }
+    try {
+      final bytes = <int>[];
+      await for (final chunk
+          in request.read().timeout(const Duration(seconds: 10))) {
+        if (bytes.length + chunk.length > accountPairingMaxPayloadBytes) {
+          return shelf.Response(413);
+        }
+        bytes.addAll(chunk);
+      }
+      return toJsonResponse(await host.receive(utf8.decode(bytes)));
+    } catch (_) {
+      return toJsonResponse({'status': false, 'message': '配对请求无效'});
+    }
+  }
 
   UDP? udp;
   static const int udpPort = 23235;
@@ -143,6 +193,7 @@ class SyncService extends GetxService {
   void initServer() async {
     try {
       var serverRouter = Router();
+      serverRouter.post('/account-pairing', _receivePairedAccount);
       serverRouter.get('/', _helloRequest);
       serverRouter.get('/info', _infoRequest);
       serverRouter.post('/sync/follow', _syncFollowUserReuqest);
@@ -150,21 +201,21 @@ class SyncService extends GetxService {
       serverRouter.post('/sync/blocked_word', _syncBlockedWordReuqest);
       serverRouter.post('/sync/account/bilibili', _syncBiliAccountReuqest);
 
-      var server = await shelf_io.serve(
+      server = await shelf_io.serve(
         serverRouter,
         InternetAddress.anyIPv4,
         httpPort,
       );
 
       // Enable content compression
-      server.autoCompress = true;
+      server!.autoCompress = true;
 
       httpRunning.value = true;
 
       var ip = await getLocalIP();
       ipAddress.value = ip;
 
-      Log.d('Serving at http://$ip:${server.port}');
+      Log.d('Serving at http://$ip:${server!.port}');
     } catch (e) {
       httpErrorMsg.value = e.toString();
       Log.logPrint(e);
@@ -291,24 +342,7 @@ class SyncService extends GetxService {
 
   /// 同步哔哩哔哩账号
   Future<shelf.Response> _syncBiliAccountReuqest(shelf.Request request) async {
-    try {
-      var body = await request.readAsString();
-      Log.d('_syncBiliAccountReuqest: $body');
-      var jsonBody = json.decode(body);
-      var cookie = jsonBody['cookie'];
-      BiliBiliAccountService.instance.setCookie(cookie);
-      BiliBiliAccountService.instance.loadUserInfo();
-      SmartDialog.showToast('已同步哔哩哔哩账号');
-      return toJsonResponse({
-        'status': true,
-        'message': 'success',
-      });
-    } catch (e) {
-      return toJsonResponse({
-        'status': false,
-        'message': e.toString(),
-      });
-    }
+    return toJsonResponse({'status': false, 'message': '请在账号管理中使用加密配对接收'});
   }
 
   shelf.Response toJsonResponse(Map<String, dynamic> data) {
@@ -323,6 +357,7 @@ class SyncService extends GetxService {
 
   @override
   void onClose() {
+    cancelAccountPairing();
     Log.d('SyncService close');
     udp?.close();
     server?.close(force: true);

@@ -24,6 +24,15 @@ class FollowUserPage extends GetView<FollowUserController> {
       appBar: AppBar(
         title: const Text("关注用户"),
         actions: [
+          Obx(() => FollowService.instance.followList
+                  .any((item) => item.liveStatus.value == -1)
+              ? TextButton(
+                  onPressed: FollowService.instance.updating.value
+                      ? null
+                      : () => FollowService.instance
+                          .startUpdateStatus(failuresOnly: true),
+                  child: const Text('重试失败项'))
+              : const SizedBox.shrink()),
           PopupMenuButton(
             itemBuilder: (context) {
               return const [
@@ -134,7 +143,9 @@ class FollowUserPage extends GetView<FollowUserController> {
                           spacing: 12,
                           children: controller.tagList.map((option) {
                             return FilterButton(
-                              text: option.tag,
+                              text: option.id == '1'
+                                  ? '直播中 (${FollowService.instance.liveList.length})'
+                                  : option.tag,
                               selected: controller.filterMode.value == option,
                               onTap: () {
                                 controller.setFilterMode(option);
@@ -157,19 +168,23 @@ class FollowUserPage extends GetView<FollowUserController> {
               itemBuilder: (_, i) {
                 var item = controller.list[i];
                 var site = Sites.allSites[item.siteId]!;
-                return FollowUserItem(
-                  item: item,
-                  onRemove: () {
-                    controller.removeItem(item);
-                  },
-                  onTap: () {
-                    AppNavigator.toLiveRoomDetail(
-                        site: site, roomId: item.roomId);
-                  },
-                  onLongPress: () {
-                    setFollowTagDialog(item);
-                  },
-                );
+                return Obx(() => FollowUserItem(
+                      key: ValueKey(item.id),
+                      item: item,
+                      pinned:
+                          FollowService.instance.pinnedIds.contains(item.id),
+                      onPin: () => FollowService.instance.togglePin(item),
+                      onRemove: () {
+                        controller.removeItem(item);
+                      },
+                      onTap: () {
+                        AppNavigator.toLiveRoomDetail(
+                            site: site, roomId: item.roomId);
+                      },
+                      onLongPress: () {
+                        setFollowTagDialog(item);
+                      },
+                    ));
               },
             ),
           ),

@@ -1,3 +1,4 @@
+import '../account/platform_account.dart';
 import 'package:simple_live_core/src/common/core_error.dart';
 import 'package:dio/dio.dart';
 
@@ -12,6 +13,21 @@ class HttpClient {
   }
 
   late Dio dio;
+
+  void _acceptResponseCookies(
+    Map<String, dynamic>? headers,
+    Response? response,
+  ) {
+    if (headers is AccountRequestHeaders && response != null) {
+      // Cookie rotation/deletion is meaningful even on a 302, 401 or 403.
+      // The per-site callback still checks HTTPS origin and session revision.
+      headers.acceptResponseCookies(
+        response.realUri,
+        response.headers['set-cookie'] ?? const [],
+      );
+    }
+  }
+
   HttpClient() {
     dio = Dio(
       BaseOptions(
@@ -42,14 +58,21 @@ class HttpClient {
         options: Options(
           responseType: ResponseType.plain,
           headers: header,
+          followRedirects: !header.keys.any(
+            (key) => key.toLowerCase() == "cookie",
+          ),
         ),
         cancelToken: cancel,
       );
+      _acceptResponseCookies(header, result);
       return result.data;
     } catch (e) {
+      if (e is DioException) _acceptResponseCookies(header, e.response);
       if (e is DioException && e.type == DioExceptionType.badResponse) {
-        throw CoreError(e.message ?? "",
-            statusCode: e.response?.statusCode ?? 0);
+        throw CoreError(
+          e.message ?? "",
+          statusCode: e.response?.statusCode ?? 0,
+        );
       } else {
         throw CoreError("发送GET请求失败");
       }
@@ -75,14 +98,21 @@ class HttpClient {
         options: Options(
           responseType: ResponseType.json,
           headers: header,
+          followRedirects: !header.keys.any(
+            (key) => key.toLowerCase() == "cookie",
+          ),
         ),
         cancelToken: cancel,
       );
+      _acceptResponseCookies(header, result);
       return result.data;
     } catch (e) {
+      if (e is DioException) _acceptResponseCookies(header, e.response);
       if (e is DioException && e.type == DioExceptionType.badResponse) {
-        throw CoreError(e.message ?? "",
-            statusCode: e.response?.statusCode ?? 0);
+        throw CoreError(
+          e.message ?? "",
+          statusCode: e.response?.statusCode ?? 0,
+        );
       } else {
         throw CoreError("发送GET请求失败");
       }
@@ -113,16 +143,24 @@ class HttpClient {
         options: Options(
           responseType: ResponseType.json,
           headers: header,
-          contentType:
-              formUrlEncoded ? Headers.formUrlEncodedContentType : null,
+          followRedirects: !header.keys.any(
+            (key) => key.toLowerCase() == "cookie",
+          ),
+          contentType: formUrlEncoded
+              ? Headers.formUrlEncodedContentType
+              : null,
         ),
         cancelToken: cancel,
       );
+      _acceptResponseCookies(header, result);
       return result.data;
     } catch (e) {
+      if (e is DioException) _acceptResponseCookies(header, e.response);
       if (e is DioException && e.type == DioExceptionType.badResponse) {
-        throw CoreError(e.message ?? "",
-            statusCode: e.response?.statusCode ?? 0);
+        throw CoreError(
+          e.message ?? "",
+          statusCode: e.response?.statusCode ?? 0,
+        );
       } else {
         throw CoreError("发送POST请求失败");
       }
@@ -147,12 +185,17 @@ class HttpClient {
         queryParameters: queryParameters,
         options: Options(
           headers: header,
+          followRedirects: !header.keys.any(
+            (key) => key.toLowerCase() == "cookie",
+          ),
           receiveDataWhenStatusError: true,
         ),
         cancelToken: cancel,
       );
+      _acceptResponseCookies(header, result);
       return result;
     } catch (e) {
+      if (e is DioException) _acceptResponseCookies(header, e.response);
       if (e is DioException && e.type == DioExceptionType.badResponse) {
         //throw CoreError(e.message, statusCode: e.response?.statusCode ?? 0);
         return e.response!;

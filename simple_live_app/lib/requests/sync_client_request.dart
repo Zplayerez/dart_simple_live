@@ -32,10 +32,10 @@ class SyncClientRequest {
   }
 
   Future<bool> syncTag(
-      SyncClinet client,
-      dynamic body, {
-        bool overlay = false,
-      }) async {
+    SyncClinet client,
+    dynamic body, {
+    bool overlay = false,
+  }) async {
     var url = "http://${client.address}:${client.port}/sync/tag";
     var data = await HttpClient.instance.postJson(
       url,
@@ -95,18 +95,6 @@ class SyncClientRequest {
   }
 
   Future<bool> syncBiliAccount(SyncClinet client, String cookie) async {
-    var url = "http://${client.address}:${client.port}/sync/account/bilibili";
-    var data = await HttpClient.instance.postJson(
-      url,
-      data: {
-        "cookie": cookie,
-      },
-    );
-
-    if (data["status"]) {
-      return true;
-    } else {
-      throw data["message"];
-    }
+    throw StateError('请在账号管理中使用加密配对发送');
   }
 }
