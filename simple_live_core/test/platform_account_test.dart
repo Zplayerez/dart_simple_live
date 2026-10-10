@@ -89,7 +89,7 @@ void main() {
             version: 1,
           ),
         );
-        expect(result.status, LiveAccountStatus.configured);
+        expect(result.status, LiveAccountStatus.signedOut);
         expect(result.message, contains('仅保存了游客设备信息'));
       },
     );
@@ -183,32 +183,6 @@ void main() {
 
   group('validation states', () {
     test(
-      'Huya tokens remain configured without claiming verified identity',
-      () async {
-        final dio = mockDio(
-          (_) => throw StateError('No Huya identity request expected'),
-        );
-        try {
-          for (final header in [
-            'udb_l=synthetic-legacy',
-            'udb_uid=synthetic-user; udb_biztoken=synthetic-token',
-          ]) {
-            final result = await PlatformAccountValidator.validate(
-              session(LiveAccountPlatform.huya, header),
-              dio: dio,
-            );
-            expect(result.status, LiveAccountStatus.configured);
-            expect(result.userId, isNull);
-            expect(result.displayName, isNull);
-            expect(result.message, contains('尚未验证'));
-          }
-        } finally {
-          dio.close();
-        }
-      },
-    );
-
-    test(
       'confirmed Bili identity, explicit expiry and transient failure stay distinct',
       () async {
         final account = session(
@@ -268,21 +242,17 @@ void main() {
     );
 
     test(
-      'unconfirmed providers do not fabricate identity or hit guessed endpoints',
+      'public identity cookies do not qualify as an account session',
       () async {
         final dio = mockDio(
           (_) => throw StateError('No network identity endpoint authorized'),
         );
-        for (final platform in [
-          LiveAccountPlatform.douyu,
-          LiveAccountPlatform.huya,
-          LiveAccountPlatform.douyin,
-        ]) {
+        for (final platform in LiveAccountPlatform.values) {
           final result = await PlatformAccountValidator.validate(
-            session(platform, 'sessionid=synthetic'),
+            session(platform, 'acf_uid=123; udb_uid=123; uid_tt=synthetic'),
             dio: dio,
           );
-          expect(result.status, LiveAccountStatus.configured);
+          expect(result.status, LiveAccountStatus.signedOut);
           expect(result.userId, isNull);
         }
         dio.close();
@@ -354,11 +324,10 @@ void main() {
               'error': 0,
               'data': {
                 'rate': downgraded ? 3 : 0,
-                'expire': downgraded ? 300 : 0,
-                'cdn': downgraded ? 'second' : 'first',
+                'rtmp_cdn': downgraded ? 'second-returned' : 'first-returned',
                 'rtmp_url': 'https://cdn.example',
                 'rtmp_live':
-                    '${downgraded ? 'lower' : 'original'}.flv?token=synthetic',
+                    '${downgraded ? 'lower' : 'original'}.flv?token=synthetic&expire=${downgraded ? 300 : 0}',
                 'multirates': [
                   {'rate': 0, 'name': '原画1080p60'},
                   {'rate': 3, 'name': '4M'},
@@ -379,6 +348,7 @@ void main() {
         expect(result.infoForUrl(result.urls.last).expiresInSeconds, 300);
         expect(result.infoForUrl(result.urls.last).actualQuality, '4M');
         expect(result.infoForUrl(result.urls.last).actualRate, 3);
+        expect(result.infoForUrl(result.urls.last).cdn, 'second-returned');
         expect(result.accountSessionVersion, 7);
         expect(result.headers, isNull); // Account Cookie is never a CDN header.
         expect(result.toString(), isNot(contains('synthetic')));

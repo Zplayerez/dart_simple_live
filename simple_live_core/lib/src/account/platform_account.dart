@@ -175,11 +175,25 @@ class LiveAccountSession {
     LiveAccountPlatform.douyin: {'www.douyin.com', 'live.douyin.com'},
   };
 
-  bool permits(Uri uri) =>
-      uri.scheme == 'https' &&
-      uri.port == 443 &&
-      uri.userInfo.isEmpty &&
-      _hosts[platform]!.contains(uri.host.toLowerCase());
+  bool permits(Uri uri) {
+    if (uri.scheme != 'https' || uri.port != 443 || uri.userInfo.isNotEmpty) {
+      return false;
+    }
+    if (_hosts[platform]!.contains(uri.host.toLowerCase())) return true;
+    // These additional account hosts only receive credentials at the exact
+    // verification endpoint used by the platform's official web login SDK.
+    return switch (platform) {
+      LiveAccountPlatform.douyu =>
+        uri.host == 'passport.douyu.com' &&
+            uri.path == '/wgapi/member/passport/safeAuth',
+      LiveAccountPlatform.huya =>
+        uri.host == 'l.huya.com' &&
+            uri.path == '/udb_web/udbport2.php' &&
+            uri.queryParameters['m'] == 'HuyaLogin' &&
+            uri.queryParameters['do'] == 'checkLogin',
+      _ => false,
+    };
+  }
 
   static bool permitsDanmakuEndpoint(LiveAccountPlatform platform, Uri uri) {
     if (uri.scheme != 'wss' ||
@@ -232,6 +246,10 @@ class LiveAccountValidation {
 }
 
 class PlatformAccountValidator {
+  static const _userAgent =
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+      '(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
+
   static Future<LiveAccountValidation> validate(
     LiveAccountSession session, {
     Dio? dio,
@@ -242,19 +260,12 @@ class PlatformAccountValidator {
         message: '未配置账号',
       );
     }
-    if (session.platform != LiveAccountPlatform.bilibili) {
-      final message = switch (session.platform) {
-        LiveAccountPlatform.douyu => '登录信息已保存并用于获取播放地址；身份与可用画质尚未确认',
-        LiveAccountPlatform.huya => '登录信息已保存；当前播放线路尚未验证账号画质权限',
-        LiveAccountPlatform.douyin =>
-          session.cookie.hasAccountSessionFor(LiveAccountPlatform.douyin)
-              ? '登录信息已保存；账号身份与可用画质尚未确认'
-              : '仅保存了游客设备信息，请通过网页登录获取账号权限',
-        _ => '',
-      };
+    if (!session.cookie.hasAccountSessionFor(session.platform)) {
       return LiveAccountValidation(
-        status: LiveAccountStatus.configured,
-        message: message,
+        status: LiveAccountStatus.signedOut,
+        message: session.platform == LiveAccountPlatform.douyin
+            ? '仅保存了游客设备信息，请通过网页登录并点击“完成登录”'
+            : '未获取到账号登录凭据，请重新网页登录并点击“完成登录”',
       );
     }
     final client =
@@ -265,49 +276,180 @@ class PlatformAccountValidator {
             receiveTimeout: const Duration(seconds: 15),
           ),
         );
-    final uri = Uri.parse('https://api.bilibili.com/x/member/web/account');
     try {
-      final response = await client.getUri(
-        uri,
-        options: Options(
-          headers: session.headersFor(uri),
-          followRedirects: false,
-          validateStatus: (status) => status != null && status < 500,
-        ),
-      );
-      dynamic body = response.data;
-      if (body is String) body = jsonDecode(body);
-      if (body is Map && body['code'] == -101) {
-        return const LiveAccountValidation(
-          status: LiveAccountStatus.expired,
-          message: '平台已明确返回未登录，请更新 Cookie',
-        );
-      }
-      if (body is Map &&
-          body['code'] == 0 &&
-          body['data'] is Map &&
-          body['data']['mid'] != null) {
-        final data = body['data'] as Map;
-        return LiveAccountValidation(
-          status: LiveAccountStatus.verified,
-          message: '账号身份已验证',
-          userId: data['mid'].toString(),
-          displayName: data['uname']?.toString(),
-          avatarUrl: data['face']?.toString(),
-        );
-      }
-      return const LiveAccountValidation(
-        status: LiveAccountStatus.unavailable,
-        message: '平台暂未提供可确认的身份结果，已保留 Cookie',
-      );
+      return await switch (session.platform) {
+        LiveAccountPlatform.bilibili => _bilibili(client, session),
+        LiveAccountPlatform.douyu => _douyu(client, session),
+        LiveAccountPlatform.huya => _huya(client, session),
+        LiveAccountPlatform.douyin => _douyin(client, session),
+      };
     } catch (_) {
       return const LiveAccountValidation(
         status: LiveAccountStatus.unavailable,
-        message: '暂时无法验证账号，请稍后重试；已保留 Cookie',
+        message: '验证请求未成功，请检查网络后点击“重新验证”；登录信息已保留',
       );
     } finally {
       if (dio == null) client.close();
     }
+  }
+
+  static Future<Map> _get(
+    Dio client,
+    LiveAccountSession session,
+    Uri uri,
+    String referer,
+  ) async {
+    if (!session.permits(uri)) throw StateError('不支持的账号验证地址');
+    final response = await client.getUri(
+      uri,
+      options: Options(
+        headers: {
+          ...session.headersFor(uri),
+          'user-agent': _userAgent,
+          'referer': referer,
+          'accept': 'application/json',
+        },
+        followRedirects: false,
+        validateStatus: (status) => status == 200,
+      ),
+    );
+    // Check explicitly as injected adapters can bypass Dio's validateStatus.
+    if (response.statusCode != 200) throw StateError('账号验证请求失败');
+    dynamic body = response.data;
+    if (body is String) body = jsonDecode(body);
+    if (body is! Map) throw const FormatException('账号验证响应格式异常');
+    return body;
+  }
+
+  static int? _code(dynamic value) => value is int
+      ? value
+      : value is String
+      ? int.tryParse(value)
+      : null;
+
+  static String? _userId(dynamic value) {
+    final number = _code(value);
+    return number != null && number > 0 ? number.toString() : null;
+  }
+
+  static String? _text(dynamic value) =>
+      value is String && value.trim().isNotEmpty ? value : null;
+
+  static LiveAccountValidation _expired(String platform) =>
+      LiveAccountValidation(
+        status: LiveAccountStatus.expired,
+        message: '$platform已返回未登录，请重新网页登录并点击“完成登录”',
+      );
+
+  static const _unavailable = LiveAccountValidation(
+    status: LiveAccountStatus.unavailable,
+    message: '平台暂未返回有效验证结果，请稍后点击“重新验证”；登录信息已保留',
+  );
+
+  static Future<LiveAccountValidation> _bilibili(
+    Dio client,
+    LiveAccountSession session,
+  ) async {
+    final body = await _get(
+      client,
+      session,
+      Uri.parse('https://api.bilibili.com/x/member/web/account'),
+      'https://www.bilibili.com/',
+    );
+    if (_code(body['code']) == -101) return _expired('哔哩哔哩');
+    final data = body['data'];
+    if (_code(body['code']) != 0 || data is! Map) return _unavailable;
+    final userId = _userId(data['mid']);
+    if (userId == null) return _unavailable;
+    return LiveAccountValidation(
+      status: LiveAccountStatus.verified,
+      message: '账号身份已验证',
+      userId: userId,
+      displayName: _text(data['uname']),
+      avatarUrl: _text(data['face']),
+    );
+  }
+
+  static Future<LiveAccountValidation> _douyu(
+    Dio client,
+    LiveAccountSession session,
+  ) async {
+    // The official passport SDK accepts error=0 from safeAuth as the server
+    // login result. Cookie fields and decoded JWT claims are not login proof.
+    final body = await _get(
+      client,
+      session,
+      Uri.https('passport.douyu.com', '/wgapi/member/passport/safeAuth', {
+        'client_id': '1',
+        'redirect_url': 'https://www.douyu.com/',
+        'did': session.deviceId ?? '10000000000000000000000000001501',
+        't': DateTime.now().millisecondsSinceEpoch.toString(),
+      }),
+      'https://www.douyu.com/',
+    );
+    if (_code(body['error']) == 16) return _expired('斗鱼');
+    final data = body['data'];
+    if (_code(body['error']) != 0 || data is! Map) return _unavailable;
+    return LiveAccountValidation(
+      status: LiveAccountStatus.verified,
+      message: '斗鱼已确认登录；进入直播间可查看实际返回的画质',
+      userId: _userId(data['uid']),
+      displayName: _text(data['nickname']),
+    );
+  }
+
+  static Future<LiveAccountValidation> _huya(
+    Dio client,
+    LiveAccountSession session,
+  ) async {
+    final body = await _get(
+      client,
+      session,
+      Uri.https('l.huya.com', '/udb_web/udbport2.php', {
+        'm': 'HuyaLogin',
+        'do': 'checkLogin',
+      }),
+      'https://www.huya.com/',
+    );
+    if (body['isLogined'] == false) return _expired('虎牙');
+    final userId = _userId(body['uid']);
+    if (body['isLogined'] != true || userId == null) return _unavailable;
+    return LiveAccountValidation(
+      status: LiveAccountStatus.verified,
+      message: '虎牙已确认登录',
+      userId: userId,
+      displayName: _text(body['userNick']) ?? _text(body['userName']),
+      avatarUrl: _text(body['userLogo']),
+    );
+  }
+
+  static Future<LiveAccountValidation> _douyin(
+    Dio client,
+    LiveAccountSession session,
+  ) async {
+    final body = await _get(
+      client,
+      session,
+      Uri.https('live.douyin.com', '/webcast/user/me/', {
+        'aid': '6383',
+        'device_platform': 'web',
+      }),
+      'https://live.douyin.com/',
+    );
+    if (_code(body['status_code']) == 20003) return _expired('抖音');
+    final data = body['data'];
+    if (_code(body['status_code']) != 0 || data is! Map) return _unavailable;
+    final userId = _userId(data['id_str']) ?? _userId(data['id']);
+    if (userId == null) return _unavailable;
+    final avatar = data['avatar_thumb'];
+    final urls = avatar is Map ? avatar['url_list'] : null;
+    return LiveAccountValidation(
+      status: LiveAccountStatus.verified,
+      message: '抖音已确认登录',
+      userId: userId,
+      displayName: _text(data['nickname']),
+      avatarUrl: urls is List && urls.isNotEmpty ? _text(urls.first) : null,
+    );
   }
 }
 

@@ -24,6 +24,7 @@ class _Site extends LiveSite {
   int statusCalls = 0;
   bool failFetch = false;
   bool? live = true;
+  String? returnedQuality;
 
   @override
   Future<LiveRoomDetail> getRoomDetail({required String roomId}) async {
@@ -49,7 +50,7 @@ class _Site extends LiveSite {
   Future<LivePlayUrl> getPlayUrls(
           {required LiveRoomDetail detail,
           required LivePlayQuality quality}) async =>
-      LivePlayUrl(urls: [
+      LivePlayUrl(actualQuality: returnedQuality, urls: [
         for (final line in lines) 'https://$line.invalid/live.flv?v=$revision',
       ]);
 
@@ -151,6 +152,24 @@ void main() {
     room.onClose();
     await tester.pump();
   }
+
+  testWidgets(
+      'provider downgrade shows real quality and confirmed login expiry',
+      (tester) async {
+    site.returnedQuality = '蓝光4M';
+    final accounts = PlatformAccountManager.instance;
+    accounts.accounts['douyu'] = const PlatformAccountState(
+        siteId: 'douyu',
+        status: LiveAccountStatus.expired,
+        hasCredential: true);
+    await open(tester);
+    expect(room.currentQualityInfo.value, '蓝光4M');
+    expect(room.qualites[room.currentQuality].quality, '原画');
+    expect(room.qualityNotice.value, contains('登录已失效，请重新登录'));
+    await tick(tester, 5);
+    expect(native.opened, hasLength(1));
+    await close(tester);
+  });
 
   testWidgets('recoverable native errors do not reopen advancing playback',
       (tester) async {

@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
+import 'package:simple_live_app/app/log.dart';
 
 class PlatformWebLoginEnvironmentException implements Exception {
   final String message;
@@ -33,6 +35,7 @@ class WindowsPlatformWebLoginEnvironment {
   final Future<WebViewEnvironment> Function(WebViewEnvironmentSettings)
       _createEnvironment;
   final Duration initializationTimeout;
+  final void Function(String) _diagnosticLog;
 
   Future<WebViewEnvironment>? _nativeInitialization;
   Future<WebViewEnvironment>? _boundedInitialization;
@@ -43,12 +46,14 @@ class WindowsPlatformWebLoginEnvironment {
     Future<WebViewEnvironment> Function(WebViewEnvironmentSettings)?
         createEnvironment,
     this.initializationTimeout = const Duration(seconds: 15),
+    void Function(String)? diagnosticLog,
   })  : _getAvailableVersion =
             getAvailableVersion ?? WebViewEnvironment.getAvailableVersion,
         _getSupportDirectory =
             getSupportDirectory ?? getApplicationSupportDirectory,
         _createEnvironment = createEnvironment ??
-            ((settings) => WebViewEnvironment.create(settings: settings));
+            ((settings) => WebViewEnvironment.create(settings: settings)),
+        _diagnosticLog = diagnosticLog ?? Log.writeLog;
 
   Future<WebViewEnvironment> prepare() {
     final existing = _boundedInitialization;
@@ -66,6 +71,7 @@ class WindowsPlatformWebLoginEnvironment {
         }
         if (error is PlatformWebLoginEnvironmentException) throw error;
         if (error is TimeoutException) {
+          _diagnosticLog('WebLogin initialization result=timeout');
           throw const PlatformWebLoginEnvironmentException(
               '网页登录组件初始化超时，请重试或使用 Cookie 导入。');
         }
@@ -92,16 +98,60 @@ class WindowsPlatformWebLoginEnvironment {
   }
 
   Future<WebViewEnvironment> _create() async {
-    final version = await _getAvailableVersion();
-    if (version == null || version.trim().isEmpty) {
-      throw const PlatformWebLoginEnvironmentException(
-          '未检测到 Microsoft Edge WebView2 Runtime，请安装后重试，或使用 Cookie 导入。');
+    var stage = 'runtime';
+    try {
+      final version = await _getAvailableVersion();
+      if (version == null || version.trim().isEmpty) {
+        _diagnosticLog('WebLogin stage=runtime result=missing');
+        throw const PlatformWebLoginEnvironmentException(
+            '未检测到 Microsoft Edge WebView2 Runtime，请安装后重试，或使用 Cookie 导入。');
+      }
+      stage = 'support_directory';
+      final supportDirectory = await _getSupportDirectory();
+      final profile =
+          Directory(path.join(supportDirectory.path, 'WebView2')).absolute;
+      stage = 'profile_directory';
+      await profile.create(recursive: true);
+      stage = 'native_environment';
+      final environment = await _createEnvironment(
+          WebViewEnvironmentSettings(userDataFolder: profile.path));
+      _diagnosticLog('WebLogin stage=native_environment result=ready');
+      return environment;
+    } on PlatformWebLoginEnvironmentException {
+      rethrow;
+    } catch (error) {
+      // Never log native messages, details, stack traces, settings or paths.
+      // The Windows build forwards only the numeric HRESULT in exception.code.
+      final String kind;
+      String? code;
+      if (error is PlatformException) {
+        kind = 'platform';
+        if (RegExp(r'^-?[0-9]{1,10}$').hasMatch(error.code)) {
+          final value = int.tryParse(error.code);
+          if (value != null && value >= -0x80000000 && value <= 0xffffffff) {
+            code =
+                '0x${value.toUnsigned(32).toRadixString(16).padLeft(8, '0')}';
+          }
+        }
+      } else if (error is FileSystemException) {
+        kind = 'filesystem';
+        code = error.osError?.errorCode.toString();
+      } else if (error is MissingPluginException) {
+        kind = 'missing_plugin';
+      } else {
+        kind = 'unexpected';
+      }
+      _diagnosticLog('WebLogin stage=$stage result=failed kind=$kind'
+          '${code == null ? '' : ' code=$code'}');
+      final message = switch (code) {
+        '0x80070005' => '系统拒绝访问网页登录组件，请检查目录权限或安全软件后重试。',
+        '0x8007139f' => '网页登录组件配置冲突，请从托盘完全退出 App 后重试。',
+        '0x80010106' || '0x800401f0' => '网页登录组件运行环境异常，请从托盘完全退出 App 后重试。',
+        _ when stage == 'support_directory' || stage == 'profile_directory' =>
+          '无法准备网页登录数据目录，请检查当前用户的目录写入权限后重试。',
+        _ => '无法初始化网页登录组件，请重试或使用 Cookie 导入。',
+      };
+      throw PlatformWebLoginEnvironmentException(message);
     }
-    final supportDirectory = await _getSupportDirectory();
-    final profile =
-        Directory(path.join(supportDirectory.path, 'WebView2')).absolute;
-    await profile.create(recursive: true);
-    return _createEnvironment(
-        WebViewEnvironmentSettings(userDataFolder: profile.path));
   }
 }

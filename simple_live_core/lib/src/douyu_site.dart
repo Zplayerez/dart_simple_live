@@ -318,14 +318,26 @@ class DouyuSite extends LiveSite {
         uri.host.isEmpty) {
       throw StateError('斗鱼返回了无效的播放地址，请稍后重试');
     }
+    // Current responses put lifetime on the signed URL and CDN in rtmp_cdn.
+    // Prefer metadata for the actual returned stream over the requested line.
+    final urlExpiry = int.tryParse(uri.queryParameters['expire'] ?? '');
+    final legacyExpiry = int.tryParse(data['expire'].toString());
+    final expiresInSeconds = urlExpiry != null && urlExpiry >= 0
+        ? urlExpiry
+        : legacyExpiry != null && legacyExpiry >= 0
+        ? legacyExpiry
+        : null;
+    final returnedCdn = data['rtmp_cdn'] ?? data['cdn'];
     return (
       url,
       LivePlayUrlInfo(
         actualRate: actualRate,
         actualQuality: actualQuality,
-        cdn: data['cdn']?.toString() ?? cdn,
+        cdn: returnedCdn is String && returnedCdn.isNotEmpty
+            ? returnedCdn
+            : cdn,
         fetchedAt: DateTime.now(),
-        expiresInSeconds: int.tryParse(data['expire'].toString()),
+        expiresInSeconds: expiresInSeconds,
       ),
     );
   }

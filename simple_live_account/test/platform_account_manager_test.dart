@@ -756,20 +756,34 @@ void main() {
   });
 
   test(
-    'bare ttwid is configured and never implies verified identity',
+    'bare ttwid is preserved as guest information and never implies login',
     () async {
       final manager = managerWith(
         MemoryCredentialStore(),
         verifier: PlatformAccountValidator.validate,
       );
       await manager.importCookie('douyin', 'synthetic-device-token');
-      expect(manager.account('douyin').status, LiveAccountStatus.configured);
+      expect(manager.account('douyin').status, LiveAccountStatus.signedOut);
       expect(manager.account('douyin').userId, isNull);
       expect(manager.credentialFor('douyin'), 'ttwid=synthetic-device-token');
     },
   );
 
   group('Douyin web credentials with the real site adapter', () {
+    // Exercise the storage/site integration without sending synthetic cookies
+    // to a live account endpoint. Server response parsing is covered in Core.
+    Future<LiveAccountValidation> verify(LiveAccountSession session) async {
+      if (!session.cookie.hasAccountSessionFor(session.platform)) {
+        return PlatformAccountValidator.validate(session);
+      }
+      return const LiveAccountValidation(
+        status: LiveAccountStatus.verified,
+        message: '抖音已确认登录',
+        userId: '123',
+        displayName: 'Test user',
+      );
+    }
+
     test(
       'long mixed header survives import and secure-store restart',
       () async {
@@ -780,12 +794,13 @@ void main() {
         final manager = PlatformAccountManager(
           sites: {'douyin': site},
           store: store,
+          verifier: verify,
         );
 
         final imported = await manager.importCookie('douyin', header);
-        expect(imported.status, LiveAccountStatus.configured);
+        expect(imported.status, LiveAccountStatus.verified);
         expect(imported.persistence, AccountPersistence.secure);
-        expect(imported.userId, isNull);
+        expect(imported.userId, '123');
         expect(imported.hasCredential, isTrue);
         expect(store.values['douyin'], header);
         expect(site.cookie, header);
@@ -796,6 +811,7 @@ void main() {
         final restarted = PlatformAccountManager(
           sites: {'douyin': restoredSite},
           store: store,
+          verifier: verify,
         );
         await restarted.initialize();
         await restarted.verifyAll();
@@ -805,28 +821,26 @@ void main() {
           restarted.account('douyin').persistence,
           AccountPersistence.secure,
         );
-        expect(
-          restarted.account('douyin').status,
-          LiveAccountStatus.configured,
-        );
-        expect(restarted.account('douyin').userId, isNull);
-        expect(restarted.account('douyin').message, contains('尚未确认'));
+        expect(restarted.account('douyin').status, LiveAccountStatus.verified);
+        expect(restarted.account('douyin').userId, '123');
+        expect(restarted.account('douyin').message, contains('已确认登录'));
       },
     );
 
     test(
-      'visitor and account cookies are distinguished without verified login',
+      'guest information stays signed out while a verified account signs in',
       () async {
         final site = DouyinSite();
         final manager = PlatformAccountManager(
           sites: {'douyin': site},
           store: MemoryCredentialStore(),
+          verifier: verify,
         );
         final visitor = await manager.importCookie(
           'douyin',
           'ttwid=synthetic-visitor',
         );
-        expect(visitor.status, LiveAccountStatus.configured);
+        expect(visitor.status, LiveAccountStatus.signedOut);
         expect(visitor.userId, isNull);
         expect(visitor.message, contains('游客设备信息'));
         expect(site.accountSession!.cookie.hasAccountSession, isFalse);
@@ -835,9 +849,9 @@ void main() {
           'douyin',
           'ttwid=synthetic-device; sessionid=synthetic-session',
         );
-        expect(account.status, LiveAccountStatus.configured);
-        expect(account.userId, isNull);
-        expect(account.message, contains('账号身份与可用画质尚未确认'));
+        expect(account.status, LiveAccountStatus.verified);
+        expect(account.userId, '123');
+        expect(account.message, contains('已确认登录'));
         expect(site.accountSession!.cookie.hasAccountSession, isTrue);
       },
     );
@@ -853,15 +867,16 @@ void main() {
           final manager = PlatformAccountManager(
             sites: {'douyin': site},
             store: store,
+            verifier: verify,
           );
           final header = syntheticDouyinWebHeader();
 
           final result = await manager.importCookie('douyin', header);
-          expect(result.status, LiveAccountStatus.configured);
+          expect(result.status, LiveAccountStatus.verified);
           expect(result.persistence, AccountPersistence.sessionOnly);
           expect(result.storageMessage, contains('仅本次会话有效'));
           expect(result.hasCredential, isTrue);
-          expect(result.userId, isNull);
+          expect(result.userId, '123');
           expect(manager.credentialFor('douyin'), header);
           expect((await site.getRequestHeaders())['cookie'], header);
         },

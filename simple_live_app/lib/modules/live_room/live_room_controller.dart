@@ -115,7 +115,12 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     _knownAccountRevision = _accountRevision;
     _accountWorker = ever(PlatformAccountManager.instance.accounts, (_) {
       final revision = _accountRevision;
-      if (revision == _knownAccountRevision || _inactive) return;
+      if (_inactive) return;
+      if (revision == _knownAccountRevision) {
+        // Verification can explain a quality limit without reopening playback.
+        _updateSourceInfo();
+        return;
+      }
       _knownAccountRevision = revision;
       // Verification alone does not change revision. Explicit account changes
       // invalidate signed URLs and reload this room once with the new session.
@@ -633,6 +638,10 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     } else if (info?.actualQuality != null &&
         info!.actualQuality != requested) {
       qualityNotice.value = '平台返回了${info.actualQuality}，请求画质为$requested';
+      if (PlatformAccountManager.instance.account(site.id).status ==
+          LiveAccountStatus.expired) {
+        qualityNotice.value += '；登录已失效，请重新登录';
+      }
     } else if (_preferredQuality != null && requested != _preferredQuality) {
       qualityNotice.value = '当前使用$requested，偏好画质为$_preferredQuality';
     } else {

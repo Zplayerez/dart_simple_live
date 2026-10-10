@@ -12,7 +12,7 @@ String accountPlatformName(String siteId) => switch (siteId) {
 
 String accountStatusLabel(LiveAccountStatus status) => switch (status) {
   LiveAccountStatus.signedOut => '未登录',
-  LiveAccountStatus.configured => '登录信息已保存，尚未确认',
+  LiveAccountStatus.configured => '待验证',
   LiveAccountStatus.verifying => '验证中',
   LiveAccountStatus.verified => '已验证登录',
   LiveAccountStatus.expired => '登录失效',
@@ -54,11 +54,11 @@ String accountDetails(PlatformAccountState state) {
 
 String accountNextStep(PlatformAccountState state) => switch (state.status) {
   LiveAccountStatus.signedOut => '登录后可使用平台允许的账号观看权限',
-  LiveAccountStatus.configured => '已保存信息；尚未确认身份，可进入直播间查看实际画质',
+  LiveAccountStatus.configured => '点击“重新验证”，向平台确认登录是否有效',
   LiveAccountStatus.verifying => '正在检查登录状态，请稍候',
   LiveAccountStatus.verified => '账号验证通过，可进入直播间选择画质',
   LiveAccountStatus.expired => '请重新登录，完成后可继续观看当前直播间',
-  LiveAccountStatus.unavailable => '暂时无法联系平台，登录信息已保留，可稍后重试',
+  LiveAccountStatus.unavailable => '请查看失败原因，稍后点击“重新验证”；登录信息已保留',
 };
 
 String accountResultMessage(PlatformAccountState state) {

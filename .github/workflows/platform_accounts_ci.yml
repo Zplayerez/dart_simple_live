@@ -35,7 +35,7 @@ jobs:
         run: |
           dart pub get
           dart analyze
-          dart test test/platform_account_test.dart test/account_session_regression_test.dart test/playback_refresh_policy_test.dart test/playback_recovery_test.dart test/sensitive_log_regression_test.dart test/http_response_cookie_regression_test.dart test/playback_command_queue_test.dart test/playback_quality_label_test.dart test/experience_regression_test.dart
+          dart test test/platform_account_test.dart test/platform_account_validation_test.dart test/account_session_regression_test.dart test/playback_refresh_policy_test.dart test/playback_recovery_test.dart test/sensitive_log_regression_test.dart test/http_response_cookie_regression_test.dart test/playback_command_queue_test.dart test/playback_quality_label_test.dart test/experience_regression_test.dart
       - name: Shared account tests
         working-directory: simple_live_account
         run: |
@@ -92,7 +92,7 @@ jobs:
         if: matrix.platform == 'windows'
         timeout-minutes: 10
         working-directory: simple_live_app
-        run: flutter drive -d windows --driver=test_driver/windows_webview_smoke_driver.dart --target=integration_test/windows_webview_smoke_test.dart --dart-define=INTEGRATION_TEST_SHOULD_REPORT_RESULTS_TO_NATIVE=false
+        run: flutter drive --profile -d windows --driver=test_driver/windows_webview_smoke_driver.dart --target=integration_test/windows_webview_smoke_test.dart --dart-define=INTEGRATION_TEST_SHOULD_REPORT_RESULTS_TO_NATIVE=false
       - name: Windows startup and first player smoke test
         if: matrix.platform == 'windows'
         timeout-minutes: 10
@@ -104,6 +104,13 @@ jobs:
         with:
           name: accounts-windows-startup-smoke
           path: simple_live_app/build/windows-startup-smoke
+          retention-days: 7
+      - name: Windows isolated local smoke bundle
+        if: success() && matrix.platform == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: accounts-windows-local-smoke
+          path: simple_live_app/build/windows/x64/runner/Profile
           retention-days: 7
       - name: Windows WebView runtime evidence
         if: always() && matrix.platform == 'windows'

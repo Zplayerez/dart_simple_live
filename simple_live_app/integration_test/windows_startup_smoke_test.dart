@@ -16,6 +16,8 @@ import 'package:simple_live_app/app/sites.dart';
 import 'package:simple_live_app/main.dart' as app;
 import 'package:simple_live_app/modules/indexed/indexed_page.dart';
 import 'package:simple_live_app/modules/live_room/player/player_controller.dart';
+import 'package:simple_live_app/modules/mine/account/platform_web_cookie_cleanup.dart';
+import 'package:simple_live_app/modules/mine/account/platform_web_login_environment.dart';
 import 'package:simple_live_app/services/local_storage_service.dart';
 import 'package:simple_live_core/simple_live_core.dart';
 
@@ -111,8 +113,17 @@ void main() {
     } finally {
       await player.dispose();
     }
+    // Login must still initialize after the real app and first player lifecycle.
+    // Use the isolated browser profile; no real account or website is accessed.
+    expect(await preparePlatformWebLoginEnvironment(), isNotNull);
+    await clearNativePlatformWebCookies('douyu');
+    report['webLoginAfterPlayerPassed'] = true;
     expect(tester.takeException(), isNull);
     report['passed'] = true;
+    // Allows the isolated native probe to be run on an affected Windows host
+    // without installing the Flutter SDK or accessing that host's accounts.
+    // Report fields contain only timings and synthetic fixture outcomes.
+    stdout.writeln('SIMPLE_LIVE_STARTUP_SMOKE_RESULT ${jsonEncode(report)}');
   }, timeout: const Timeout(Duration(minutes: 3)));
 }
 

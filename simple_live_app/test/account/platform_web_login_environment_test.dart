@@ -77,7 +77,9 @@ void main() {
 
   test('native failure is sanitized and does not poison retry', () async {
     var calls = 0;
+    final diagnostics = <String>[];
     final loader = WindowsPlatformWebLoginEnvironment(
+      diagnosticLog: diagnostics.add,
       getAvailableVersion: () async => 'synthetic-runtime',
       getSupportDirectory: () async => directory,
       createEnvironment: (_) async {
@@ -98,6 +100,48 @@ void main() {
     );
     expect(await loader.prepare(), same(environment));
     expect(calls, 2);
+    expect(diagnostics, [
+      'WebLogin stage=native_environment result=failed kind=platform code=0x00000000',
+      'WebLogin stage=native_environment result=ready',
+    ]);
+  });
+
+  test('native HRESULT is retained but native message and details are omitted',
+      () async {
+    final diagnostics = <String>[];
+    final loader = WindowsPlatformWebLoginEnvironment(
+      diagnosticLog: diagnostics.add,
+      getAvailableVersion: () async => 'synthetic-runtime',
+      getSupportDirectory: () async => directory,
+      createEnvironment: (_) async => throw PlatformException(
+        code: '2147947423', // HRESULT_FROM_WIN32(ERROR_INVALID_STATE)
+        message: 'private-profile-path synthetic-secret',
+        details: {'cookie': 'synthetic-secret'},
+      ),
+    );
+    await expectLater(
+      loader.prepare(),
+      throwsA(isA<PlatformWebLoginEnvironmentException>()
+          .having((error) => error.message, 'message', contains('配置冲突'))),
+    );
+    expect(diagnostics.single,
+        'WebLogin stage=native_environment result=failed kind=platform code=0x8007139f');
+  });
+
+  test('untrusted platform error codes never reach diagnostics', () async {
+    final diagnostics = <String>[];
+    final loader = WindowsPlatformWebLoginEnvironment(
+      diagnosticLog: diagnostics.add,
+      getAvailableVersion: () async => throw PlatformException(
+          code: 'private-profile-path synthetic-secret',
+          message: 'synthetic-secret'),
+      getSupportDirectory: () async => directory,
+      createEnvironment: (_) async => environment,
+    );
+    await expectLater(
+        loader.prepare(), throwsA(isA<PlatformWebLoginEnvironmentException>()));
+    expect(diagnostics.single,
+        'WebLogin stage=runtime result=failed kind=platform');
   });
 
   test('timeout retry reuses pending native creation and accepts late success',

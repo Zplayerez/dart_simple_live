@@ -4,10 +4,12 @@ import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
+import 'package:simple_live_app/modules/mine/account/platform_web_cookie_cleanup.dart';
 import 'package:simple_live_app/modules/mine/account/platform_web_login_environment.dart';
 import 'package:simple_live_app/modules/mine/account/platform_web_login_policy.dart';
 import 'package:simple_live_core/simple_live_core.dart';
@@ -58,6 +60,26 @@ void main() {
       }
     });
     report['isolatedProfile'] = true;
+
+    // Exercise a real native initialization error in an isolated path, then
+    // verify that the next environment can still be created. Native failures
+    // must retain their HRESULT even in optimized Windows builds.
+    PlatformWebViewEnvironment.debugLoggingSettings.enabled = false;
+    final invalidProfile = File('${supportDirectory.path}/not-a-directory');
+    await invalidProfile.writeAsString('local smoke fixture');
+    try {
+      await WebViewEnvironment.create(
+        settings:
+            WebViewEnvironmentSettings(userDataFolder: invalidProfile.path),
+      ).timeout(const Duration(seconds: 20));
+      fail('A file cannot be used as the WebView2 profile directory.');
+    } on PlatformException catch (error) {
+      final hresult = int.tryParse(error.code);
+      expect(hresult != null && hresult.toUnsigned(32) >= 0x80000000, isTrue,
+          reason:
+              'The Windows adapter must preserve a failing numeric HRESULT.');
+      report['nativeFailureHresultPreserved'] = true;
+    }
 
     // Exercise the exact environment creation path used by account login.
     final environment = await preparePlatformWebLoginEnvironment();
@@ -188,10 +210,60 @@ document.getElementById('smoke-marker') !== null
       }
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pump(const Duration(milliseconds: 300));
+      if (name == 'initial') {
+        report['stage'] = 'logging out before reopening';
+        await _checkNativeLogout(environment, report);
+      }
     }
     report['stage'] = 'passed';
     // The production helper owns the environment for the application lifetime.
   }, timeout: const Timeout(Duration(minutes: 3)));
+}
+
+Future<void> _checkNativeLogout(
+    WebViewEnvironment environment, Map<String, dynamic> report) async {
+  final manager = CookieManager.instance(webViewEnvironment: environment);
+  const fixtures = [
+    ('douyu.com', '/', 'smoke_root'),
+    ('douyu.com', '/member', 'smoke_scoped'),
+    ('huya.com', '/', 'smoke_other_platform'),
+  ];
+  try {
+    for (final (domain, path, name) in fixtures) {
+      expect(
+          await manager.setCookie(
+            url: WebUri('https://www.$domain$path'),
+            domain: '.$domain',
+            path: path,
+            name: name,
+            value: 'synthetic-logout-fixture',
+            isHttpOnly: true,
+            isSecure: true,
+          ),
+          isTrue);
+    }
+    // Production logout creates and disposes a headless view, using the same
+    // environment as the visible login page that the caller next reopens.
+    await clearNativePlatformWebCookies('douyu');
+    final selected =
+        await manager.getCookies(url: WebUri('https://www.douyu.com/member'));
+    expect(selected.isEmpty, isTrue);
+    final other =
+        await manager.getCookies(url: WebUri('https://www.huya.com/'));
+    expect(
+        other.any((cookie) => cookie.name == 'smoke_other_platform'), isTrue);
+    expect(await preparePlatformWebLoginEnvironment(), same(environment));
+    report['logoutBeforeReopenPassed'] = true;
+  } finally {
+    for (final (domain, path, name) in fixtures) {
+      await manager.deleteCookie(
+        url: WebUri('https://www.$domain$path'),
+        domain: '.$domain',
+        path: path,
+        name: name,
+      );
+    }
+  }
 }
 
 class _SmokePathProvider extends PathProviderPlatform {
