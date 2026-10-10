@@ -215,4 +215,82 @@ void main() {
     recovery.attempts = 2;
     expect(recovery.selectLine(['a/flv', 'b/flv'], 'a/flv', start), 1);
   });
+
+  test(
+    'a healthy minute does not forgive a CDN that fails every five minutes',
+    () {
+      final recovery = PlaybackRecovery();
+      recovery.failed('a/flv', start);
+      recovery.attempts = 1;
+      expect(recovery.selectLine(['a/flv', 'b/flv'], 'a/flv', start), 0);
+      recovery.reset(clearLines: false);
+      final again = start.add(const Duration(minutes: 5));
+      recovery.failed('a/flv', again);
+      recovery.attempts = 1;
+      expect(recovery.selectLine(['b/flv', 'a/flv'], 'a/flv', again), 0);
+      expect(recovery.hasRecurringFailure('a/flv', again), isTrue);
+      expect(recovery.selectionReason, 'avoid-recurring');
+    },
+  );
+
+  test(
+    'recurring CDN cooldown survives while isolated failures become usable',
+    () {
+      final recovery = PlaybackRecovery();
+      recovery.failed('a/flv', start);
+      recovery.reset(clearLines: false);
+      recovery.failed('a/flv', start.add(const Duration(minutes: 5)));
+      recovery.failed('b/flv', start.add(const Duration(minutes: 6)));
+      recovery.attempts = 2;
+      final later = start.add(const Duration(minutes: 9));
+      expect(
+        recovery.selectLine(['a/flv', 'b/flv', 'c/flv'], 'c/flv', later),
+        1,
+      );
+      expect(recovery.hasRecurringFailure('a/flv', later), isTrue);
+    },
+  );
+
+  test('a CDN gets another renewal after fifteen minutes without failure', () {
+    final recovery = PlaybackRecovery();
+    recovery.failed('a/flv', start);
+    recovery.failed('a/flv', start.add(const Duration(minutes: 5)));
+    recovery.reset(clearLines: false);
+    final later = start.add(const Duration(minutes: 21));
+    recovery.failed('a/flv', later);
+    recovery.attempts = 1;
+    expect(recovery.selectLine(['a/flv', 'b/flv'], 'a/flv', later), 0);
+    expect(recovery.hasRecurringFailure('a/flv', later), isFalse);
+    expect(recovery.selectionReason, 'renew-current');
+  });
+
+  test(
+    'explicit selection reset removes recurring failures as well as retries',
+    () {
+      final recovery = PlaybackRecovery();
+      recovery.failed('a/flv', start);
+      final again = start.add(const Duration(minutes: 5));
+      recovery.failed('a/flv', again);
+      recovery.reset();
+      recovery.failed('a/flv', again);
+      recovery.attempts = 1;
+      expect(recovery.selectLine(['a/flv', 'b/flv'], 'a/flv', again), 0);
+      expect(recovery.hasRecurringFailure('a/flv', again), isFalse);
+    },
+  );
+
+  test(
+    'an only available recurring line can still renew within the retry budget',
+    () {
+      final recovery = PlaybackRecovery();
+      recovery.failed('a/flv', start);
+      recovery.reset(clearLines: false);
+      final again = start.add(const Duration(minutes: 5));
+      recovery.failed('a/flv', again);
+      recovery.attempts = 1;
+      expect(recovery.selectLine(['a/flv'], 'a/flv', again), 0);
+      expect(recovery.selectionReason, 'only-line');
+      expect(recovery.retryDelay, const Duration(seconds: 2));
+    },
+  );
 }

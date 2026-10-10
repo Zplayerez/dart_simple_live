@@ -321,6 +321,75 @@ void main() {
     await close(tester);
   });
 
+  testWidgets(
+      'five-minute failures change CDN after healthy retry resets and preserve quality',
+      (tester) async {
+    site.lines = ['a', 'b', 'c'];
+    await open(tester);
+    await tick(tester, 301);
+    eof();
+    await tester.pump();
+    expect(native.opened.last, startsWith('https://a.invalid/'));
+    await tick(tester, 301);
+    expect(room.mediaErrorRetryCount, 0);
+    site.lines = ['c', 'a', 'b'];
+    eof();
+    await tester.pump();
+    expect(native.opened.last, startsWith('https://b.invalid/'));
+    await tick(tester, 301);
+    eof();
+    await tester.pump();
+    expect(native.opened.last, startsWith('https://b.invalid/'));
+    await tick(tester, 301);
+    eof();
+    await tester.pump();
+    // a is still penalized despite several healthy minutes on b.
+    expect(native.opened.last, startsWith('https://c.invalid/'));
+    expect(room.currentQualityInfo.value, '原画');
+    expect(native.opened, hasLength(5));
+    await tick(tester, 16 * 60);
+    expect(native.opened, hasLength(5));
+    expect(room.mediaErrorRetryCount, 0);
+    await close(tester);
+  });
+
+  testWidgets('an explicit playback reload clears the recurring line history',
+      (tester) async {
+    await open(tester);
+    for (var cycle = 0; cycle < 2; cycle++) {
+      await tick(tester, 301);
+      eof();
+      await tester.pump();
+    }
+    expect(native.opened.last, startsWith('https://b.invalid/'));
+    await room.getPlayUrl();
+    await tester.pump();
+    expect(native.opened.last, startsWith('https://a.invalid/'));
+    await tick(tester, 301);
+    eof();
+    await tester.pump();
+    expect(native.opened.last, startsWith('https://a.invalid/'));
+    expect(native.opened, hasLength(5));
+    await close(tester);
+  });
+
+  testWidgets('a single periodically failing CDN still gets fresh signed URLs',
+      (tester) async {
+    site.lines = ['a'];
+    await open(tester);
+    final opened = native.opened.single;
+    for (var cycle = 0; cycle < 3; cycle++) {
+      await tick(tester, 301);
+      eof();
+      await tester.pump();
+    }
+    expect(native.opened, hasLength(4));
+    expect(native.opened.toSet(), hasLength(4));
+    expect(native.opened.last, isNot(opened));
+    expect(room.liveStatus.value, isTrue);
+    await close(tester);
+  });
+
   testWidgets('closing during retry backoff cancels the pending source open',
       (tester) async {
     await open(tester);

@@ -1,7 +1,7 @@
 {
-    "version": "1.6.8",
-    "version_num": 10608,
-    "version_desc": "- 修复长时间播放后的反复刷新，普通错误先观察播放进度\n- 连续故障时避开失败线路，增加重试间隔与次数上限\n- 持续解码异常触发受控恢复，零星坏帧不重连\n- 修复斗鱼响应格式异常导致播放恢复失败\n- 合并重复解码错误日志，便于排查播放故障",
+    "version": "1.6.9",
+    "version_num": 10609,
+    "version_desc": "- 修复斗鱼周期性断流后反复使用同一故障线路的问题\n- 保留近期线路故障记录，重复断流时优先切换同画质备用线路\n- 正常播放时不主动刷新，手动切换可重新选择线路\n- 补充播放恢复诊断信息，便于追踪线路切换原因",
     "prerelease":false,
     "download_url": "https://github.com/Zplayerez/dart_simple_live/releases"
 }

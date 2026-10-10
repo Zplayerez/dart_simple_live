@@ -199,7 +199,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
           errorMsg.value.isNotEmpty &&
           liveStatus.value &&
           !_inactive) {
-        _recovery.reset();
+        _recovery.reset(clearLines: false);
         unawaited(_handleMediaFailure());
       }
     });
@@ -861,9 +861,20 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
   void _logPlayback(String event) {
     final state = player.state;
-    Log.d('[Playback] $event site=${site.id} source=$_sourceSequence '
+    final info = currentLineIndex >= 0 && currentLineIndex < playUrls.length
+        ? _activePlayUrl?.infoForUrl(playUrls[currentLineIndex])
+        : null;
+    final age = info?.fetchedAt == null
+        ? null
+        : playbackNow.difference(info!.fetchedAt!).inSeconds;
+    Log.d(
+        '[Playback] $event site=${site.id} room=$roomId source=$_sourceSequence '
         'line=${_lineIdentity ?? "unknown"} quality=${currentQualityInfo.value} '
         'reason=$_recoveryReason attempt=${_recovery.attempts} '
+        'recurring=${_recovery.hasRecurringFailure(_lineIdentity, playbackNow)} '
+        'selection=${_recovery.selectionReason} candidates=${playUrls.length} '
+        'urlAgeSeconds=$age expiresInSeconds=${info?.expiresInSeconds} '
+        'accountAttached=${site.liveSite.accountSession != null} '
         'positionMs=${state.position.inMilliseconds} '
         'playing=${state.playing} buffering=${state.buffering} '
         'completed=${state.completed}');

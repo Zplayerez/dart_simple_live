@@ -1,9 +1,12 @@
-/// Retry accounting survives source replacement. Only an explicit user action
-/// or sustained, measured playback grants a fresh budget.
+/// Short-term retries and recurring line failures have separate lifetimes.
+/// Controllers scope this state to a room/quality/account selection and clear
+/// it on explicit changes. A healthy minute only replenishes the retry budget.
 class PlaybackRecovery {
+  static const _failureMemory = Duration(minutes: 15);
   int attempts = 0;
   bool stopped = false;
-  final Map<String, DateTime> _failedLines = {};
+  String selectionReason = 'preferred';
+  final Map<String, _LineFailure> _failedLines = {};
 
   Duration get retryDelay =>
       Duration(seconds: attempts == 0 ? 0 : (1 << attempts.clamp(1, 3)));
@@ -11,38 +14,83 @@ class PlaybackRecovery {
   void reset({bool clearLines = true}) {
     attempts = 0;
     stopped = false;
-    if (clearLines) _failedLines.clear();
+    if (clearLines) {
+      _failedLines.clear();
+      selectionReason = 'preferred';
+    }
   }
 
   void failed(String? identity, DateTime now) {
+    _prune(now);
     if (identity != null) {
-      _failedLines[identity] = now.add(const Duration(minutes: 2));
+      final recurring = _failedLines.containsKey(identity);
+      _failedLines[identity] = _LineFailure(
+        lastFailure: now,
+        cooldownUntil: now.add(
+          recurring ? _failureMemory : const Duration(minutes: 2),
+        ),
+        recurring: recurring,
+      );
     }
+  }
+
+  void _prune(DateTime now) {
+    _failedLines.removeWhere(
+      (_, failure) => !now.isBefore(failure.lastFailure.add(_failureMemory)),
+    );
+  }
+
+  bool hasRecurringFailure(String? identity, DateTime now) {
+    _prune(now);
+    return _failedLines[identity]?.recurring ?? false;
   }
 
   int selectLine(List<String> identities, String? current, DateTime now) {
     if (identities.isEmpty) return 0;
-    _failedLines.removeWhere((_, until) => !now.isBefore(until));
+    _prune(now);
     final selected = identities.indexOf(current ?? '');
-    // Renew a possibly expired URL once before abandoning its CDN.
-    if (attempts <= 1 && selected >= 0) return selected;
+    final recurring = _failedLines[current]?.recurring ?? false;
+    // Renew an isolated expired URL once. A healthy minute must not turn a
+    // CDN that disconnects every five minutes into a first-time failure again.
+    if (attempts <= 1 && selected >= 0 && !recurring) {
+      selectionReason = 'renew-current';
+      return selected;
+    }
     final start = selected < 0 ? 0 : (selected + 1) % identities.length;
     for (var offset = 0; offset < identities.length; offset++) {
       final index = (start + offset) % identities.length;
-      if (!_failedLines.containsKey(identities[index])) return index;
+      final failure = _failedLines[identities[index]];
+      if (failure == null || !now.isBefore(failure.cooldownUntil)) {
+        selectionReason = recurring ? 'avoid-recurring' : 'alternative';
+        return index;
+      }
     }
     // All alternatives failed recently. The bounded budget/backoff still
     // applies; choose the least recently failed line, rather than cycling.
     var oldest = start;
     for (var i = 0; i < identities.length; i++) {
-      if (_failedLines[identities[i]]!.isBefore(
-        _failedLines[identities[oldest]]!,
+      if (_failedLines[identities[i]]!.lastFailure.isBefore(
+        _failedLines[identities[oldest]]!.lastFailure,
       )) {
         oldest = i;
       }
     }
+    selectionReason = identities.length == 1
+        ? 'only-line'
+        : 'all-lines-cooling';
     return oldest;
   }
+}
+
+class _LineFailure {
+  final DateTime lastFailure;
+  final DateTime cooldownUntil;
+  final bool recurring;
+  const _LineFailure({
+    required this.lastFailure,
+    required this.cooldownUntil,
+    required this.recurring,
+  });
 }
 
 class PlaybackHealth {
