@@ -65,14 +65,15 @@ void main() {
     // verify that the next environment can still be created. Native failures
     // must retain their HRESULT even in optimized Windows builds.
     PlatformWebViewEnvironment.debugLoggingSettings.enabled = false;
-    final invalidProfile = File('${supportDirectory.path}/not-a-directory');
-    await invalidProfile.writeAsString('local smoke fixture');
+    report['stage'] = 'checking native startup failure diagnostics';
     try {
       await WebViewEnvironment.create(
-        settings:
-            WebViewEnvironmentSettings(userDataFolder: invalidProfile.path),
+        settings: WebViewEnvironmentSettings(
+          browserExecutableFolder: '${supportDirectory.path}/missing-browser',
+          userDataFolder: '${supportDirectory.path}/failed-environment',
+        ),
       ).timeout(const Duration(seconds: 20));
-      fail('A file cannot be used as the WebView2 profile directory.');
+      fail('A nonexistent fixed runtime must fail environment creation.');
     } on PlatformException catch (error) {
       final hresult = int.tryParse(error.code);
       expect(hresult != null && hresult.toUnsigned(32) >= 0x80000000, isTrue,

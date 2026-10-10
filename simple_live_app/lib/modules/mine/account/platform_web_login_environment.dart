@@ -149,7 +149,7 @@ class WindowsPlatformWebLoginEnvironment {
         '0x80010106' || '0x800401f0' => '网页登录组件运行环境异常，请从托盘完全退出 App 后重试。',
         _ when stage == 'support_directory' || stage == 'profile_directory' =>
           '无法准备网页登录数据目录，请检查当前用户的目录写入权限后重试。',
-        _ => '无法初始化网页登录组件，请重试或使用 Cookie 导入。',
+        _ => '无法初始化网页登录组件，请先重试；若仍失败，请从托盘完全退出 App 后重新打开。',
       };
       throw PlatformWebLoginEnvironmentException(message);
     }

@@ -180,12 +180,9 @@ class LiveAccountSession {
       return false;
     }
     if (_hosts[platform]!.contains(uri.host.toLowerCase())) return true;
-    // These additional account hosts only receive credentials at the exact
+    // Additional account hosts only receive credentials at the exact
     // verification endpoint used by the platform's official web login SDK.
     return switch (platform) {
-      LiveAccountPlatform.douyu =>
-        uri.host == 'passport.douyu.com' &&
-            uri.path == '/wgapi/member/passport/safeAuth',
       LiveAccountPlatform.huya =>
         uri.host == 'l.huya.com' &&
             uri.path == '/udb_web/udbport2.php' &&
@@ -374,27 +371,34 @@ class PlatformAccountValidator {
     Dio client,
     LiveAccountSession session,
   ) async {
-    // The official passport SDK accepts error=0 from safeAuth as the server
-    // login result. Cookie fields and decoded JWT claims are not login proof.
+    // Use the official site's current-user header endpoint. Passport safeAuth
+    // can reject a valid website session that getH5Play accepts for original
+    // quality, so its response cannot establish website login or expiry.
     final body = await _get(
       client,
       session,
-      Uri.https('passport.douyu.com', '/wgapi/member/passport/safeAuth', {
-        'client_id': '1',
-        'redirect_url': 'https://www.douyu.com/',
-        'did': session.deviceId ?? '10000000000000000000000000001501',
-        't': DateTime.now().millisecondsSinceEpoch.toString(),
+      Uri.https('www.douyu.com', '/lapi/member/api/getInfo', {
+        'client_type': '0',
+        'd': DateTime.now().millisecondsSinceEpoch.toString(),
       }),
       'https://www.douyu.com/',
     );
-    if (_code(body['error']) == 16) return _expired('斗鱼');
-    final data = body['data'];
-    if (_code(body['error']) != 0 || data is! Map) return _unavailable;
+    final data = body['msg'];
+    if (data is! Map) return _unavailable;
+    // Anonymous, UID-only and invalid-session controls all return this
+    // explicit signed-out shape. Other errors remain retryable.
+    if (_code(body['error']) == 1 && _code(data['uid']) == 0) {
+      return _expired('斗鱼');
+    }
+    final userId = _userId(data['uid']);
+    if (_code(body['error']) != 0 || userId == null) return _unavailable;
+    final info = data['info'];
     return LiveAccountValidation(
       status: LiveAccountStatus.verified,
       message: '斗鱼已确认登录；进入直播间可查看实际返回的画质',
-      userId: _userId(data['uid']),
-      displayName: _text(data['nickname']),
+      userId: userId,
+      displayName: info is Map ? _text(info['nn']) : null,
+      avatarUrl: info is Map ? _text(info['icon']) : null,
     );
   }
 

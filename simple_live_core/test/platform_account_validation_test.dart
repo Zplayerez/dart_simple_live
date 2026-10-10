@@ -7,11 +7,23 @@ import 'package:test/test.dart';
 const fixtures = {
   LiveAccountPlatform.douyu: (
     cookie: 'acf_auth=synthetic-private; dy_did=synthetic-device',
-    host: 'passport.douyu.com',
-    path: '/wgapi/member/passport/safeAuth',
-    success: {'error': 0, 'data': <String, dynamic>{}},
-    expired: {'error': 16, 'data': <String, dynamic>{}},
-    rejected: {'error': 99, 'data': <String, dynamic>{}},
+    host: 'www.douyu.com',
+    path: '/lapi/member/api/getInfo',
+    success: {
+      'error': 0,
+      'msg': {
+        'uid': 123,
+        'info': {'nn': 'Test user', 'icon': 'https://example.test/avatar.png'},
+      },
+    },
+    expired: {
+      'error': 1,
+      'msg': {'uid': 0, 'info': 0},
+    },
+    rejected: {
+      'error': 0,
+      'msg': {'uid': 0},
+    },
   ),
   LiveAccountPlatform.huya: (
     cookie: 'udb_uid=123; udb_biztoken=synthetic-private',
@@ -119,17 +131,13 @@ void main() {
           expect(request.validateStatus(503), isFalse);
           expect(result.playbackCapability, isNull);
           // Authentication is not a claim that a particular room granted 1080p60.
-          if (entry.key != LiveAccountPlatform.douyu) {
-            expect(result.userId, '123');
-            expect(result.displayName, 'Test user');
-            expect(result.avatarUrl, 'https://example.test/avatar.png');
-          } else {
-            expect(request.uri.queryParameters['did'], 'synthetic-device');
-            expect(request.uri.queryParameters['client_id'], '1');
-            expect(
-              request.uri.queryParameters['redirect_url'],
-              'https://www.douyu.com/',
-            );
+          expect(result.userId, '123');
+          expect(result.displayName, 'Test user');
+          expect(result.avatarUrl, 'https://example.test/avatar.png');
+          if (entry.key == LiveAccountPlatform.douyu) {
+            expect(request.uri.queryParameters['client_type'], '0');
+            expect(request.uri.queryParameters['d'], isNotEmpty);
+            expect(request.uri.queryParameters.containsKey('uid'), isFalse);
           }
         },
       );
@@ -140,7 +148,7 @@ void main() {
       });
 
       test(
-        'explicit server logout instructs re-login and retains credential',
+        'explicit server logout is expired and retains the credential',
         () async {
           responseBody = entry.value.expired;
           final result = await validate();
@@ -160,6 +168,49 @@ void main() {
           expect(result.userId, isNull);
         },
       );
+
+      if (entry.key == LiveAccountPlatform.douyu) {
+        test(
+          'unproven website and passport responses never imply expiry',
+          () async {
+            for (final body in [
+              {'error': 0, 'msg': {}},
+              {
+                'error': 0,
+                'data': {'uid': 123},
+              },
+              {'error': 1, 'msg': {}},
+              {
+                'error': 1,
+                'msg': {'uid': 123},
+              },
+              {'error': 16, 'data': {}},
+              {
+                'error': 99,
+                'msg': {'uid': 123},
+              },
+            ]) {
+              responseBody = body;
+              final result = await validate();
+              expect(result.status, LiveAccountStatus.unavailable);
+              expect(result.userId, isNull);
+            }
+          },
+        );
+
+        test(
+          'local UID or nickname alone is never a verified account',
+          () async {
+            session = LiveAccountSession(
+              platform: entry.key,
+              cookie: PlatformCookie.parse('acf_uid=123; acf_nickname=Test'),
+              version: 1,
+            );
+            expect((await validate()).status, LiveAccountStatus.signedOut);
+            expect(requests, isEmpty);
+          },
+        );
+      }
 
       test(
         'malformed response is never mistaken for authentication or expiry',
@@ -218,6 +269,7 @@ void main() {
       );
       for (final value in [
         'https://passport.douyu.com/',
+        'https://passport.douyu.com/wgapi/member/passport/safeAuth',
         'https://passport.douyu.com/wgapi/member/passport/logout',
         'https://passport.douyu.com.evil.test/wgapi/member/passport/safeAuth',
         'http://passport.douyu.com/wgapi/member/passport/safeAuth',
