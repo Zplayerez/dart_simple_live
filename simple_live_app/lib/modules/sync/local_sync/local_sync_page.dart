@@ -20,13 +20,25 @@ class LocalSyncPage extends GetView<LocalSyncController> {
           TextButton.icon(
             onPressed: controller.showInfo,
             icon: const Icon(Icons.qr_code),
-            label: const Text("信息"),
+            label: const Text("本机二维码"),
           ),
         ],
       ),
       body: ListView(
         padding: AppStyle.edgeInsetsA12,
         children: [
+          const Padding(
+              padding: EdgeInsets.symmetric(vertical: 16),
+              child: Text(
+                  '两台设备连接同一 Wi-Fi 并打开 Simple Live。点击下方设备即可同步，也可用另一台设备扫描“本机二维码”。')),
+          Obx(() => SyncService.instance.discovering.value
+              ? const LinearProgressIndicator()
+              : const SizedBox.shrink()),
+          Obx(() => SyncService.instance.discoveryError.value.isEmpty
+              ? const SizedBox.shrink()
+              : Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Text(SyncService.instance.discoveryError.value))),
           SettingsCard(
             child: Padding(
               padding: AppStyle.edgeInsetsA12,
@@ -41,7 +53,7 @@ class LocalSyncPage extends GetView<LocalSyncController> {
                     },
                     decoration: InputDecoration(
                       labelText: '客户端地址',
-                      hintText: '请输入地址或扫码自动填写',
+                      hintText: '输入另一台设备的 IP 地址，或扫码连接',
                       contentPadding: AppStyle.edgeInsetsH12,
                       border: const OutlineInputBorder(),
                       suffixIcon: Visibility(
@@ -108,7 +120,7 @@ class LocalSyncPage extends GetView<LocalSyncController> {
           ),
           AppStyle.vGap12,
           const Text(
-            "如果无法扫描到设备，请手动输入地址",
+            "未发现设备时，可扫描本机二维码或手动输入地址。\n请允许 Simple Live 通过防火墙访问局域网。",
             textAlign: TextAlign.center,
             style: TextStyle(
               color: Colors.grey,

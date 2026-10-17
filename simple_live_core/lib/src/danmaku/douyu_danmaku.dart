@@ -20,9 +20,11 @@ class DouyuDanmaku implements LiveDanmaku {
   String serverUrl = "wss://danmuproxy.douyu.com:8506";
 
   WebScoketUtils? webScoketUtils;
+  final _packets = _DouyuPacketDecoder();
 
   @override
   Future start(dynamic args) async {
+    _packets.clear();
     webScoketUtils = WebScoketUtils(
       url: serverUrl,
       heartBeatTime: heartbeatTime,
@@ -30,6 +32,7 @@ class DouyuDanmaku implements LiveDanmaku {
         decodeMessage(e);
       },
       onReady: () {
+        _packets.clear();
         onReady?.call();
         joinRoom(args);
       },
@@ -47,10 +50,12 @@ class DouyuDanmaku implements LiveDanmaku {
   }
 
   void joinRoom(roomId) {
-    webScoketUtils
-        ?.sendMessage(serializeDouyu("type@=loginreq/roomid@=$roomId/"));
     webScoketUtils?.sendMessage(
-        serializeDouyu("type@=joingroup/rid@=$roomId/gid@=-9999/"));
+      serializeDouyu("type@=loginreq/roomid@=$roomId/"),
+    );
+    webScoketUtils?.sendMessage(
+      serializeDouyu("type@=joingroup/rid@=$roomId/gid@=-9999/"),
+    );
   }
 
   @override
@@ -61,18 +66,22 @@ class DouyuDanmaku implements LiveDanmaku {
 
   @override
   Future stop() async {
+    _packets.clear();
     onMessage = null;
     onClose = null;
     webScoketUtils?.close();
   }
 
   void decodeMessage(List<int> data) {
+    for (final body in _packets.add(data)) {
+      _decodeBody(body);
+    }
+  }
+
+  void _decodeBody(String result) {
     try {
-      String? result = deserializeDouyu(data);
-      if (result == null) {
-        return;
-      }
       var jsonData = sttToJObject(result);
+      if (jsonData is! Map) return;
 
       var type = jsonData["type"]?.toString();
       //斗鱼好像不会返回人气值
@@ -105,8 +114,8 @@ class DouyuDanmaku implements LiveDanmaku {
       List<int> buffer = utf8.encode(body);
 
       var writer = BinaryWriter([]);
-      writer.writeInt(4 + 4 + body.length + 1, 4, endian: Endian.little);
-      writer.writeInt(4 + 4 + body.length + 1, 4, endian: Endian.little);
+      writer.writeInt(4 + 4 + buffer.length + 1, 4, endian: Endian.little);
+      writer.writeInt(4 + 4 + buffer.length + 1, 4, endian: Endian.little);
       writer.writeInt(clientSendToServer, 2, endian: Endian.little);
       writer.writeInt(encrypted, 1, endian: Endian.little);
       writer.writeInt(reserved, 1, endian: Endian.little);
@@ -120,24 +129,8 @@ class DouyuDanmaku implements LiveDanmaku {
   }
 
   String? deserializeDouyu(List<int> buffer) {
-    try {
-      var reader = BinaryReader(Uint8List.fromList(buffer));
-      int fullMsgLength =
-          reader.readInt32(endian: Endian.little); //fullMsgLength
-      reader.readInt32(endian: Endian.little); //fullMsgLength2
-      int bodyLength = fullMsgLength - 9;
-      reader.readShort(endian: Endian.little); //packType
-      reader.readByte(endian: Endian.little); //encrypted
-      reader.readByte(endian: Endian.little); //reserved
-
-      var bytes = reader.readBytes(bodyLength);
-
-      reader.readByte(endian: Endian.little); //固定为0
-      return utf8.decode(bytes);
-    } catch (e) {
-      CoreLog.error(e);
-      return null;
-    }
+    final bodies = _DouyuPacketDecoder().add(buffer);
+    return bodies.isEmpty ? null : bodies.first;
   }
 
   //辣鸡STT
@@ -158,9 +151,10 @@ class DouyuDanmaku implements LiveDanmaku {
         if (field.isEmpty) {
           continue;
         }
-        var tokens = field.split("@=");
-        var k = tokens[0];
-        var v = unscapeSlashAt(tokens[1]);
+        final delimiter = field.indexOf('@=');
+        if (delimiter < 0) continue;
+        var k = field.substring(0, delimiter);
+        var v = unscapeSlashAt(field.substring(delimiter + 2));
         result[k] = sttToJObject(v);
       }
       return result;
@@ -192,5 +186,55 @@ class DouyuDanmaku implements LiveDanmaku {
       default:
         return LiveMessageColor.white;
     }
+  }
+}
+
+/// WebSocket messages may contain several packets or a partial packet. Validate
+/// both lengths and the header before trusting offsets; retain only a bounded
+/// incomplete tail. Bad bytes cannot poison all subsequent chat packets.
+class _DouyuPacketDecoder {
+  static const _maxPacketLength = 1024 * 1024;
+  Uint8List _pending = Uint8List(0);
+
+  void clear() => _pending = Uint8List(0);
+
+  List<String> add(List<int> data) {
+    final bytes = Uint8List.fromList([..._pending, ...data]);
+    clear();
+    final view = ByteData.sublistView(bytes);
+    final result = <String>[];
+    var offset = 0;
+    while (bytes.length - offset >= 12) {
+      final length = view.getUint32(offset, Endian.little);
+      final duplicate = view.getUint32(offset + 4, Endian.little);
+      final type = view.getUint16(offset + 8, Endian.little);
+      if (length < 9 ||
+          length > _maxPacketLength ||
+          length != duplicate ||
+          (type != 689 && type != 690) ||
+          bytes[offset + 10] != 0 ||
+          bytes[offset + 11] != 0) {
+        offset++;
+        continue;
+      }
+      final end = offset + length + 4;
+      if (end > bytes.length) break;
+      if (bytes[end - 1] != 0) {
+        offset++;
+        continue;
+      }
+      // Replace malformed text only after a complete, valid packet is framed.
+      result.add(
+        utf8.decode(
+          Uint8List.sublistView(bytes, offset + 12, end - 1),
+          allowMalformed: true,
+        ),
+      );
+      offset = end;
+    }
+    if (offset < bytes.length) {
+      _pending = Uint8List.fromList(bytes.sublist(offset));
+    }
+    return result;
   }
 }

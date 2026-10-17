@@ -4,7 +4,12 @@ import 'package:simple_live_app/services/sync_service.dart';
 
 class SyncClientRequest {
   Future<SyncClientInfoModel> getClientInfo(SyncClinet client) async {
-    var url = "http://${client.address}:${client.port}/info";
+    var url = Uri(
+            scheme: 'http',
+            host: client.address,
+            port: client.port,
+            path: '/info')
+        .toString();
     var data = await HttpClient.instance.getJson(url);
 
     return SyncClientInfoModel.fromJson(data);
@@ -15,7 +20,12 @@ class SyncClientRequest {
     dynamic body, {
     bool overlay = false,
   }) async {
-    var url = "http://${client.address}:${client.port}/sync/follow";
+    var url = Uri(
+            scheme: 'http',
+            host: client.address,
+            port: client.port,
+            path: '/sync/follow')
+        .toString();
     var data = await HttpClient.instance.postJson(
       url,
       data: body,
@@ -36,7 +46,12 @@ class SyncClientRequest {
     dynamic body, {
     bool overlay = false,
   }) async {
-    var url = "http://${client.address}:${client.port}/sync/tag";
+    var url = Uri(
+            scheme: 'http',
+            host: client.address,
+            port: client.port,
+            path: '/sync/tag')
+        .toString();
     var data = await HttpClient.instance.postJson(
       url,
       data: body,
@@ -57,7 +72,12 @@ class SyncClientRequest {
     dynamic body, {
     bool overlay = false,
   }) async {
-    var url = "http://${client.address}:${client.port}/sync/history";
+    var url = Uri(
+            scheme: 'http',
+            host: client.address,
+            port: client.port,
+            path: '/sync/history')
+        .toString();
     var data = await HttpClient.instance.postJson(
       url,
       data: body,
@@ -78,7 +98,12 @@ class SyncClientRequest {
     dynamic body, {
     bool overlay = false,
   }) async {
-    var url = "http://${client.address}:${client.port}/sync/blocked_word";
+    var url = Uri(
+            scheme: 'http',
+            host: client.address,
+            port: client.port,
+            path: '/sync/blocked_word')
+        .toString();
     var data = await HttpClient.instance.postJson(
       url,
       data: body,

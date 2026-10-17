@@ -95,8 +95,10 @@ class BinaryReader {
 
 class TarsInputStream {
   late BinaryReader br;
+  final bool allowMalformedStrings;
 
-  TarsInputStream(Uint8List? bytes, {int pos = 0}) {
+  TarsInputStream(Uint8List? bytes,
+      {int pos = 0, this.allowMalformedStrings = false}) {
     if (bytes != null) {
       br = BinaryReader(bytes);
       br.position = pos;
@@ -349,7 +351,7 @@ class TarsInputStream {
 
     var ss = br.readBytes(len);
 
-    return utf8.decode(ss);
+    return utf8.decode(ss, allowMalformed: allowMalformedStrings);
   }
 
   String _readString4() {
@@ -361,7 +363,7 @@ class TarsInputStream {
 
     var ss = br.readBytes(len);
 
-    return utf8.decode(ss);
+    return utf8.decode(ss, allowMalformed: allowMalformedStrings);
   }
 
   /// 读取浮点数

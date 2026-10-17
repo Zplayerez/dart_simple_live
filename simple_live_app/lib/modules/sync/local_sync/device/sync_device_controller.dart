@@ -7,7 +7,6 @@ import 'package:simple_live_app/app/log.dart';
 import 'package:simple_live_app/app/utils.dart';
 import 'package:simple_live_app/models/sync_client_info_model.dart';
 import 'package:simple_live_app/requests/sync_client_request.dart';
-import 'package:simple_live_app/services/bilibili_account_service.dart';
 import 'package:simple_live_app/services/db_service.dart';
 import 'package:simple_live_app/services/sync_service.dart';
 
@@ -27,20 +26,26 @@ class SyncDeviceController extends BaseController {
     return overlay;
   }
 
-  void syncFollowAndTag() async {
+  Future<void> syncFollowAndTag() async {
+    var followSent = false;
     try {
       var overlay = await showOverlayDialog();
       SmartDialog.showLoading(msg: "同步中...");
       var users = DBService.instance.getFollowList();
-      var tags = DBService.instance.getFollowTagList();
+
       var data = json.encode(users.map((e) => e.toJson()).toList());
-      var dataT = json.encode(tags.map((e) => e.toJson()).toList());
+
       await request.syncFollow(client, data, overlay: overlay);
-      // 标签和关注必须同时同步
-      await request.syncTag(client, dataT, overlay: overlay);
-      SmartDialog.showToast("已同步关注列表和标签");
+      followSent = true;
+      if (info.supportsFollowTags) {
+        final tags = DBService.instance.getFollowTagList();
+        final dataT = json.encode(tags.map((e) => e.toJson()).toList());
+        await request.syncTag(client, dataT, overlay: overlay);
+      }
+      SmartDialog.showToast(info.supportsFollowTags ? '已同步关注列表和标签' : '已同步关注列表');
     } catch (e) {
-      SmartDialog.showToast("同步失败:$e");
+      SmartDialog.showToast(
+          followSent ? '关注列表已同步，标签发送失败，请重试' : '关注列表发送失败，请检查设备连接');
       Log.logPrint(e);
     } finally {
       SmartDialog.dismiss();
@@ -71,25 +76,6 @@ class SyncDeviceController extends BaseController {
       var data = json.encode(shieldList.toList());
       await request.syncBlockedWord(client, data, overlay: overlay);
       SmartDialog.showToast("已同步屏蔽词");
-    } catch (e) {
-      SmartDialog.showToast("同步失败:$e");
-      Log.logPrint(e);
-    } finally {
-      SmartDialog.dismiss();
-    }
-  }
-
-  void syncBiliAccount() async {
-    try {
-      if (!BiliBiliAccountService.instance.logined.value) {
-        SmartDialog.showToast("未登录哔哩哔哩");
-        return;
-      }
-      SmartDialog.showLoading(msg: "同步中...");
-
-      await request.syncBiliAccount(
-          client, BiliBiliAccountService.instance.cookie);
-      SmartDialog.showToast("已同步哔哩哔哩账号");
     } catch (e) {
       SmartDialog.showToast("同步失败:$e");
       Log.logPrint(e);

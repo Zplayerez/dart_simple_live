@@ -1,4 +1,5 @@
 import '../interface/live_site.dart';
+import '../douyu_site.dart';
 import 'live_play_quality.dart';
 import 'live_play_url.dart';
 import 'live_room_detail.dart';
@@ -32,10 +33,25 @@ class PlaybackSource {
     String roomId,
     LivePlayQuality selected, {
     bool allowQualityFallback = false,
+    List<LivePlayQuality>? previousQualities,
   }) async {
     final detail = await site.getRoomDetail(roomId: roomId);
     if (!detail.status && !detail.isRecord) return null;
-    final qualities = await site.getPlayQualites(detail: detail);
+    List<LivePlayQuality> qualities;
+    try {
+      qualities = await site.getPlayQualites(detail: detail);
+    } on DouyuPlayException catch (error) {
+      // A failed auto-CDN quality discovery must not prevent trying the known
+      // rate/CDNs with a fresh room signature. Never reuse an old signed URL.
+      if (site is! DouyuSite ||
+          error.code != -5 ||
+          selected.data is! DouyuPlayData ||
+          previousQualities == null ||
+          previousQualities.isEmpty) {
+        rethrow;
+      }
+      qualities = List.of(previousQualities);
+    }
     if (qualities.isEmpty) throw StateError('暂时无法获取清晰度');
     if (!allowQualityFallback &&
         !qualities.any((q) => q.quality == selected.quality)) {

@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'local_sync_address.dart';
 
 import 'package:flutter/material.dart';
 
@@ -26,6 +27,7 @@ class LocalSyncController extends BaseController {
   }
 
   void initConnect() {
+    if (_closed) return;
     if (address != null && address!.isNotEmpty) {
       addressController.text = address!;
       connect();
@@ -35,40 +37,43 @@ class LocalSyncController extends BaseController {
   TextEditingController addressController = TextEditingController();
   SyncClientRequest request = SyncClientRequest();
 
-  void connect() async {
-    var address = addressController.text;
-    if (address.isEmpty) {
-      SmartDialog.showToast("请输入地址");
-      return;
-    }
-    if (address.startsWith('http')) {
-      var uri = Uri.tryParse(address);
-      if (uri != null) {
-        address = uri.host;
-      }
-    } else if (address.contains(':')) {
-      var parts = address.split(":");
-      address = parts.first;
-    }
+  bool _connecting = false;
+  bool _closed = false;
 
-    var client = SyncClinet(
-      id: 'manual',
-      address: address,
-      port: SyncService.httpPort,
-      name: "手动输入",
-      type: Platform.operatingSystem,
-    );
-    connectClient(client);
+  void connect() {
+    try {
+      final addresses = parseLocalSyncAddresses(addressController.text);
+      if (addresses.length > 1) {
+        showPickerAddress(addresses.map((uri) => uri.toString()).toList());
+        return;
+      }
+      final uri = addresses.single;
+      connectClient(SyncClinet(
+          id: 'manual',
+          address: uri.host,
+          port: uri.port,
+          name: '手动输入',
+          type: Platform.operatingSystem));
+    } on FormatException catch (error) {
+      SmartDialog.showToast(error.message);
+    }
   }
 
   void connectClient(SyncClinet client) async {
+    if (_connecting || _closed) return;
+    _connecting = true;
     try {
       SmartDialog.showLoading(msg: "连接中...");
-      var info = await request.getClientInfo(client);
-      AppNavigator.toSyncDevice(client, info);
+      var info = await request
+          .getClientInfo(client)
+          .timeout(const Duration(seconds: 8));
+      if (!_closed) AppNavigator.toSyncDevice(client, info);
     } catch (e) {
-      SmartDialog.showToast("连接失败:$e");
+      if (!_closed) {
+        SmartDialog.showToast('无法连接设备，请确认两台设备在同一 Wi-Fi、均已打开 App，并允许防火墙的局域网访问');
+      }
     } finally {
+      _connecting = false;
       SmartDialog.dismiss();
     }
   }
@@ -78,14 +83,9 @@ class LocalSyncController extends BaseController {
     if (result == null || result.isEmpty) {
       return;
     }
-    var addressList = (result as String).split(";");
-    if (addressList.length >= 2) {
-      //弹窗选择
-      showPickerAddress(addressList);
-    } else {
-      addressController.text = result;
-      //connect();
-    }
+    if (_closed) return;
+    addressController.text = result as String;
+    connect();
   }
 
   void showPickerAddress(List<String> addressList) {
@@ -99,7 +99,7 @@ class LocalSyncController extends BaseController {
             onTap: () {
               Get.back();
               addressController.text = addressList[i];
-              // connect();
+              connect();
             },
           );
         },
@@ -108,7 +108,9 @@ class LocalSyncController extends BaseController {
     );
   }
 
-  void showInfo() {
+  void showInfo() async {
+    await SyncService.instance.initServer();
+    if (_closed) return;
     Utils.showBottomSheet(
       title: "本机信息",
       child: Column(
@@ -139,7 +141,7 @@ class LocalSyncController extends BaseController {
           Visibility(
             visible: !SyncService.instance.httpRunning.value,
             child: Text(
-              'HTTP服务未启动：${SyncService.instance.httpErrorMsg}，请尝试重启应用',
+              'HTTP服务未启动：${SyncService.instance.httpErrorMsg}，请返回后点击刷新重试',
               textAlign: TextAlign.center,
             ),
           ),
@@ -154,5 +156,12 @@ class LocalSyncController extends BaseController {
         ],
       ),
     );
+  }
+
+  @override
+  void onClose() {
+    _closed = true;
+    addressController.dispose();
+    super.onClose();
   }
 }

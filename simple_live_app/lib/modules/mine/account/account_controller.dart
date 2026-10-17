@@ -6,6 +6,7 @@ import 'package:get/get.dart';
 import 'package:simple_live_account/simple_live_account.dart';
 import 'package:simple_live_account/widgets/account_labels.dart';
 import 'package:simple_live_account/widgets/account_pairing_page.dart';
+import 'package:simple_live_account/widgets/platform_qr_login_page.dart';
 import 'package:simple_live_app/app/utils.dart';
 import 'package:simple_live_app/modules/mine/account/cookie_import_dialog.dart';
 import 'package:simple_live_app/routes/route_path.dart';
@@ -43,6 +44,26 @@ class AccountController extends GetxController {
                   ? '正在清理登录信息，请稍候…'
                   : accountNextStep(state)),
             ),
+            if (supportsPlatformQrLogin(siteId))
+              ListTile(
+                leading: const Icon(Icons.qr_code),
+                title: Text(state.status == LiveAccountStatus.expired
+                    ? '重新扫码登录'
+                    : '扫码登录'),
+                subtitle:
+                    Text('使用${accountPlatformName(siteId)} App 扫码，自动完成登录'),
+                trailing: const Icon(Icons.chevron_right),
+                enabled: !busy,
+                onTap: () {
+                  Get.back();
+                  Get.to(() => PlatformQrLoginPage(
+                      siteId: siteId,
+                      onWebLogin: platformWebLoginSupported
+                          ? () => Get.off(
+                              () => PlatformWebLoginPage(siteId: siteId))
+                          : null));
+                },
+              ),
             if (platformWebLoginSupported)
               ListTile(
                 leading: const Icon(Icons.account_circle_outlined),
@@ -57,19 +78,6 @@ class AccountController extends GetxController {
                   Get.to(() => PlatformWebLoginPage(siteId: siteId));
                 },
               ),
-            if (siteId == 'bilibili') ...[
-              ListTile(
-                leading: const Icon(Icons.qr_code),
-                title: const Text('扫码登录'),
-                subtitle: const Text('使用哔哩哔哩 App 扫描二维码'),
-                trailing: const Icon(Icons.chevron_right),
-                enabled: !busy,
-                onTap: () {
-                  Get.back();
-                  Get.toNamed(RoutePath.kBiliBiliQRLogin);
-                },
-              ),
-            ],
             ListTile(
               leading: const Icon(Icons.edit_outlined),
               title: Text(state.hasCredential ? '更新 Cookie' : '导入 Cookie'),

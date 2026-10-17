@@ -81,6 +81,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   /// Only finite-lived sources are prefetched; healthy playback is never replaced.
   Timer? _playUrlRefreshTimer;
   Timer? _healthyPlaybackTimer;
+  Timer? _recoveryProbeTimer;
   final _playbackHealth = PlaybackHealthMonitor();
   final _recovery = PlaybackRecovery();
   String _recoveryReason = 'initial';
@@ -565,6 +566,8 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   }
 
   void _stopPlayUrlRefreshTimer({bool invalidateRequests = true}) {
+    _recoveryProbeTimer?.cancel();
+    _recoveryProbeTimer = null;
     _playUrlRefreshTimer?.cancel();
     _playUrlRefreshTimer = null;
     _healthyPlaybackTimer?.cancel();
@@ -649,16 +652,17 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     }
   }
 
-  Future<PlaybackSource?> _fetchPlayUrl(
-      String context, bool refreshRoomDetail) async {
+  Future<PlaybackSource?> _fetchPlayUrl(String context, bool refreshRoomDetail,
+      {LivePlayQuality? quality}) async {
     final requestedSite = site.liveSite;
-    final selectedQuality = qualites[currentQuality];
+    final selectedQuality = quality ?? qualites[currentQuality];
     try {
       final PlaybackSource? snapshot;
       if (refreshRoomDetail) {
         snapshot = await PlaybackSource.refresh(
             requestedSite, roomId, selectedQuality,
-            allowQualityFallback: smoothPlayback.value);
+            allowQualityFallback: smoothPlayback.value,
+            previousQualities: List.of(qualites));
       } else {
         final requestedDetail = detail.value!;
         final qualities = List<LivePlayQuality>.of(qualites);
@@ -730,37 +734,59 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   }
 
   void _observeHealthyPlayback() {
+    _recoveryProbeTimer?.cancel();
+    _recoveryProbeTimer = null;
     _healthyPlaybackTimer?.cancel();
     _playbackHealth.reset();
     final context = _playContext;
     final sequence = _sourceSequence;
-    _healthyPlaybackTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+    var sampling = false;
+    _healthyPlaybackTimer =
+        Timer.periodic(const Duration(seconds: 1), (timer) async {
       if (_inactive || context != _playContext || sequence != _sourceSequence) {
         timer.cancel();
         return;
       }
-      final state = player.state;
-      final health = _playbackHealth.sample(
-        now: playbackNow,
-        position: state.position,
-        playing: state.playing,
-        buffering: state.buffering,
-        completed: state.completed,
-        suspended: isBackground || _openingContext != null,
-      );
-      if (health.progressing) {
-        recoveryMessage.value = '';
-      }
-      if (health.stable && _recovery.attempts > 0) {
-        _logPlayback('stable');
-        _recovery.reset(clearLines: false);
-      }
-      // Continue observing after the initial healthy minute: decode failures
-      // in a long session may never emit media_kit's stream.error or EOF.
-      if (health.decoderStalled &&
-          !_handlingMediaFailure &&
-          !_recovery.stopped) {
-        _queueMediaFailure(reason: 'decoder-stall', confirmed: true);
+      if (sampling) return;
+      sampling = true;
+      try {
+        final avSync = _playbackHealth.needsAvSyncSample(playbackNow)
+            ? await readAvSync()
+            : null;
+        if (_inactive ||
+            context != _playContext ||
+            sequence != _sourceSequence) {
+          return;
+        }
+        final state = player.state;
+        final health = _playbackHealth.sample(
+          now: playbackNow,
+          position: state.position,
+          playing: state.playing,
+          buffering: state.buffering,
+          completed: state.completed,
+          suspended: isBackground || _openingContext != null,
+          avSyncSeconds: avSync,
+        );
+        if (health.progressing) {
+          recoveryMessage.value = '';
+        }
+        if (health.stable && _recovery.attempts > 0) {
+          _logPlayback('stable');
+          _recovery.reset(clearLines: false);
+        }
+        // Continue observing after the initial healthy minute: decode failures
+        // in a long session may never emit media_kit's stream.error or EOF.
+        if ((health.decoderStalled || health.timelineStalled) &&
+            !_handlingMediaFailure &&
+            !_recovery.stopped) {
+          _queueMediaFailure(
+              reason:
+                  health.decoderStalled ? 'decoder-stall' : 'timeline-stall',
+              confirmed: true);
+        }
+      } finally {
+        sampling = false;
       }
     });
     _startPlayUrlRefreshTimer();
@@ -777,6 +803,19 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       return;
     }
     _playbackHealth.decoderError(playbackNow);
+  }
+
+  @override
+  void mediaTimelineError() {
+    if (_inactive ||
+        isBackground ||
+        !liveStatus.value ||
+        _openingContext != null ||
+        _handlingMediaFailure ||
+        !player.state.playing) {
+      return;
+    }
+    _playbackHealth.timelineError(playbackNow);
   }
 
   Future<void> changePlayLine(int index) async {
@@ -895,7 +934,9 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
         ? _recovery.selectLine(
             sources.urls.map(sources.identityForUrl).toList(),
             identity,
-            playbackNow)
+            playbackNow,
+            preferAlternative: _recoveryReason == 'decoder-stall' ||
+                _recoveryReason == 'timeline-stall')
         : sources.indexForIdentity(identity);
   }
 
@@ -905,8 +946,13 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
   Future<bool?> _getLiveStatus() async {
     try {
-      return await site.liveSite.getLiveStatus(roomId: roomId);
+      final status = await site.liveSite
+          .getLiveStatus(roomId: roomId)
+          .timeout(const Duration(seconds: 10));
+      _logPlayback('live-status state=$status');
+      return status;
     } catch (e) {
+      _logPlayback('live-status state=unknown');
       Log.logPrint(e);
       return null;
     }
@@ -926,6 +972,57 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     return completion.future;
   }
 
+  void _scheduleRecoveryProbe() {
+    if (_inactive ||
+        isBackground ||
+        !liveStatus.value ||
+        !_recovery.stopped ||
+        (_recoveryProbeTimer?.isActive ?? false)) {
+      return;
+    }
+    final context = _playContext;
+    final delay = _recovery.probeDelay;
+    errorMsg.value = '播放源暂时不可用，${delay.inSeconds} 秒后自动重试，也可手动切换线路';
+    _logPlayback('retry-wait delaySeconds=${delay.inSeconds}');
+    _recoveryProbeTimer = Timer(delay, () async {
+      _recoveryProbeTimer = null;
+      if (_inactive ||
+          isBackground ||
+          context != _playContext ||
+          !liveStatus.value ||
+          !_recovery.stopped ||
+          _handlingMediaFailure) {
+        return;
+      }
+      _failureContext = context;
+      _recovery.probes++;
+      bool current() => !_inactive && !isBackground && context == _playContext;
+      try {
+        _logPlayback('retry-probe');
+        final status = await _getLiveStatus();
+        if (!current()) return;
+        if (status == false) {
+          liveStatus.value = false;
+          _stopPlayUrlRefreshTimer();
+          return;
+        }
+        // Only request fresh sources. Healthy playback never enters this path.
+        final refreshed = await _refreshPlayUrl(refreshRoomDetail: true);
+        if (!current() || !refreshed) return;
+        _recovery.stopped = false;
+        _recovery.attempts = 1;
+        await initPlaylist();
+      } catch (e) {
+        Log.logPrint(e);
+      } finally {
+        if (_failureContext == context) _failureContext = null;
+        if (current() && _recovery.stopped && liveStatus.value) {
+          _scheduleRecoveryProbe();
+        }
+      }
+    });
+  }
+
   Future<void> _handleMediaFailure() async {
     if (_handlingMediaFailure ||
         _recovery.stopped ||
@@ -935,6 +1032,8 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       return;
     }
     final context = _playContext;
+    _recoveryProbeTimer?.cancel();
+    _recoveryProbeTimer = null;
     _failureContext = context;
     _recovery.failed(_lineIdentity, playbackNow);
     _logPlayback('recover');
@@ -968,7 +1067,14 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
           smoothPlayback.value &&
           currentQuality + 1 < qualites.length) {
         recoveryMessage.value = '线路恢复失败，正在尝试较低画质…';
-        await selectQuality(currentQuality + 1, remember: false);
+        // Keep the recovery state until a fresh lower-quality source is ready.
+        // A failed fallback must still reach the delayed probe path.
+        final fallback = await _fetchPlayUrl(context, true,
+            quality: qualites[currentQuality + 1]);
+        if (_inactive || context != _playContext || fallback == null) return;
+        _applyPlayUrl(fallback);
+        _recovery.reset(clearLines: false);
+        await initPlaylist();
         return;
       } else {
         errorMsg.value = status == null
@@ -983,6 +1089,12 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       Log.logPrint(e);
     } finally {
       if (_failureContext == context) _failureContext = null;
+      if (!_inactive &&
+          context == _playContext &&
+          _recovery.stopped &&
+          liveStatus.value) {
+        _scheduleRecoveryProbe();
+      }
       if (!_inactive && context == _playContext && errorMsg.value.isNotEmpty) {
         recoveryMessage.value = '';
       }
@@ -1005,7 +1117,9 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       _scheduleFailureCheck(context, _sourceSequence);
       return;
     }
-    if (_handlingMediaFailure) return;
+    if (_handlingMediaFailure) {
+      return;
+    }
     if (!confirmed) {
       _scheduleFailureCheck(context, _sourceSequence);
       return;
@@ -1611,6 +1725,7 @@ $loadErrorTrace''');
     if (state == AppLifecycleState.resumed) {
       Log.d("返回前台");
       isBackground = false;
+      if (_recovery.stopped && liveStatus.value) _scheduleRecoveryProbe();
       // Desktop focus changes also emit resumed, without a preceding pause.
       // Preserve the measured healthy interval when its observer is still live.
       if (!(_healthyPlaybackTimer?.isActive ?? false) &&

@@ -19,8 +19,9 @@ import 'package:simple_live_app/services/signalr_service.dart';
 
 class RemoteSyncRoomController extends BaseController {
   final String roomId;
-  final SignalRService signalR = SignalRService();
-  RemoteSyncRoomController(this.roomId) {
+  final SignalRService signalR;
+  RemoteSyncRoomController(this.roomId, {SignalRService? service})
+      : signalR = service ?? SignalRService() {
     if (roomId.isNotEmpty) {
       currentRoomId.value = roomId;
     }
@@ -34,45 +35,59 @@ class RemoteSyncRoomController extends BaseController {
   var currentRoomId = "--".obs;
   RxList<RoomUser> roomUsers = <RoomUser>[].obs;
 
+  final busy = false.obs;
+  final errorMessage = ''.obs;
+  final ready = false.obs;
+  bool _closed = false;
+  StreamSubscription? _stateSubscription;
   Timer? _timer;
   var countDown = 600.obs;
 
   @override
   void onInit() {
+    listenSignalR();
     connect();
     super.onInit();
   }
 
-  void connect() async {
-    listenSignalR();
-    await signalR.connect();
-    if (signalR.state == SignalRConnectionState.connected) {
-      if (roomId.isEmpty) {
-        createRoom();
-      } else {
-        joinRoom(roomId);
-      }
-    }
-  }
-
-  void createRoom() async {
+  Future<void> connect() async {
+    if (_closed || busy.value) return;
+    busy.value = true;
+    ready.value = false;
+    errorMessage.value = '';
+    roomUsers.clear();
+    _timer?.cancel();
     try {
-      var resp = await signalR.createRoom();
-      if (resp.isSuccess) {
+      await signalR.connect();
+      if (_closed) return;
+      if (roomId.isEmpty) {
+        final resp = await signalR.createRoom();
+        if (_closed) return;
+        if (!resp.isSuccess) throw RemoteSyncException(resp.message);
         currentRoomId.value = resp.data!;
         _startTimer();
       } else {
-        SmartDialog.showToast(resp.message);
-        Get.back();
+        final resp = await signalR.joinRoom(roomId);
+        if (_closed) return;
+        if (!resp.isSuccess) throw RemoteSyncException(resp.message);
       }
-    } catch (e) {
-      SmartDialog.showToast("创建房间失败");
-      Get.back();
+      ready.value = true;
+    } catch (error) {
+      if (_closed) return;
+      errorMessage.value =
+          RemoteSyncException.fromError(error, roomId.isEmpty ? '创建房间' : '加入房间')
+              .message;
+      Log.w(
+          'RemoteSync room setup failed: ${error.runtimeType}; ${errorMessage.value}');
+      await signalR.disconnect();
+    } finally {
+      if (!_closed) busy.value = false;
     }
   }
 
   void _startTimer() {
-    // 倒计时5分钟，自动关闭页面
+    // 房间有效期10分钟；重试前取消旧计时器。
+    _timer?.cancel();
     countDown.value = 600;
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
       countDown--;
@@ -83,23 +98,24 @@ class RemoteSyncRoomController extends BaseController {
     });
   }
 
-  void joinRoom(String roomId) async {
-    try {
-      var resp = await signalR.joinRoom(roomId);
-      if (!resp.isSuccess) {
-        SmartDialog.showToast(resp.message);
-        Get.back();
-      }
-    } catch (e) {
-      SmartDialog.showToast("加入房间失败");
-      Get.back();
-    }
-  }
-
   void listenSignalR() {
+    _stateSubscription = signalR.stateStream.listen((state) {
+      if (_closed ||
+          busy.value ||
+          !ready.value ||
+          state != SignalRConnectionState.disconnected) {
+        return;
+      }
+      ready.value = false;
+      roomUsers.clear();
+      _timer?.cancel();
+      errorMessage.value = '连接已断开，请重新连接同步房间';
+    });
     _roomDestroyedSubscription = signalR.onRoomDestroyedStream.listen((roomId) {
-      SmartDialog.showToast("房间已被销毁");
-      Get.back();
+      ready.value = false;
+      _timer?.cancel();
+      roomUsers.clear();
+      errorMessage.value = '房间已关闭，请重新创建或加入房间';
     });
     _roomUserUpdatedSubscription = signalR.onRoomUserUpdatedStream.listen(
       (roomUsers) {
@@ -318,7 +334,9 @@ class RemoteSyncRoomController extends BaseController {
 
   @override
   void onClose() {
+    _closed = true;
     _timer?.cancel();
+    _stateSubscription?.cancel();
     _roomDestroyedSubscription?.cancel();
     _roomUserUpdatedSubscription?.cancel();
     _onFavoriteSubscription?.cancel();

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:simple_live_account/simple_live_account.dart';
@@ -86,6 +87,11 @@ class SyncService extends GetxService {
   var httpErrorMsg = "".obs;
 
   var deviceId = "";
+  final discoveryError = ''.obs;
+  final discovering = false.obs;
+  Future<void>? _startingUdp;
+  Future<void>? _startingServer;
+  bool _closed = false;
 
   @override
   void onInit() {
@@ -97,84 +103,107 @@ class SyncService extends GetxService {
   }
 
   /// 监听其他端UDP广播的回复
-  void listenUDP() async {
-    udp = await UDP.bind(Endpoint.any(port: const Port(udpPort)));
-    udp!.asStream().listen(listenUdp);
+  Future<void> listenUDP() {
+    if (_closed || udp != null) return Future.value();
+    return _startingUdp ??= _bindUdp().whenComplete(() => _startingUdp = null);
+  }
+
+  Future<void> _bindUdp() async {
+    try {
+      final socket = await UDP.bind(Endpoint.any(port: const Port(udpPort)));
+      if (_closed) {
+        socket.close();
+        return;
+      }
+      udp = socket;
+      discoveryError.value = '';
+      socket.asStream().listen(listenUdp, onError: (_) {
+        if (!_closed) discoveryError.value = '设备发现暂不可用，可扫码或手动输入地址连接';
+      });
+    } catch (_) {
+      discoveryError.value = '无法启动设备发现，可扫码或手动输入地址连接';
+    }
   }
 
   void listenUdp(Datagram? datagram) {
-    var str = String.fromCharCodes(datagram!.data);
-    Log.i("Received: $str from ${datagram.address}:${datagram.port}");
-    if (str.startsWith('{') && str.endsWith('}')) {
-      var data = json.decode(str);
-      //如果是自己的广播，就不处理
-      if (data['id'] == deviceId) {
+    if (_closed || datagram == null || datagram.data.length > 8192) return;
+    try {
+      final data = jsonDecode(utf8.decode(datagram.data));
+      if (data is! Map || data['id'] == deviceId) return;
+      if (data['type'] == 'hello') {
+        if (httpRunning.value) sendInfo();
         return;
       }
-      //处理Hello的广播
-      if (data["type"] == "hello") {
-        //如果http服务已经启动，就回复自己的信息
-        if (httpRunning.value) {
-          sendInfo();
-        }
+      if (data['id'] is! String ||
+          data['name'] is! String ||
+          data['type'] is! String) {
         return;
       }
-      // 处理其他端的广播
-      // 地址直接从datagram中获取，能收到回复说明地址是可以连通的
-      var address = datagram.address.address;
-      //检查是否已经存在
-      var index =
+      final address = datagram.address.address;
+      final client = SyncClinet(
+          id: data['id'],
+          name: data['name'],
+          address: address,
+          port: httpPort,
+          type: data['type']);
+      final index =
           scanClients.indexWhere((element) => element.address == address);
-      if (index == -1) {
-        scanClients.add(
-          SyncClinet(
-            id: data['id'],
-            name: data['name'],
-            address: address,
-            port: httpPort,
-            type: data['type'],
-          ),
-        );
+      if (index < 0) {
+        scanClients.add(client);
+      } else {
+        scanClients[index] = client;
       }
+    } catch (_) {
+      // Ignore unrelated or malformed broadcast packets.
     }
   }
 
   /// 发送UDP广播至其他端
-  void sendHello() async {
-    await udp!.send(
-      json.encode({
-        "id": deviceId,
-        "type": "hello",
-      }).codeUnits,
-      Endpoint.broadcast(
-        port: const Port(udpPort),
-      ),
-    );
-    Log.i("send udp: hello");
+  Future<void> sendHello() async {
+    await listenUDP();
+    if (_closed || udp == null) return;
+    try {
+      await udp!.send(
+        json.encode({
+          "id": deviceId,
+          "type": "hello",
+        }).codeUnits,
+        Endpoint.broadcast(
+          port: const Port(udpPort),
+        ),
+      );
+    } catch (_) {
+      discoveryError.value = '发送设备发现请求失败，可扫码或手动输入地址连接';
+    }
   }
 
   /// UDP广播自身信息
-  void sendInfo() async {
-    //var ip = await getLocalIP();
+  Future<void> sendInfo() async {
+    if (_closed || udp == null) return;
+    try {
+      //var ip = await getLocalIP();
 
-    var name = await getDeviceName();
+      var name = await getDeviceName();
+      if (_closed || udp == null) return;
 
-    var data = {
-      "id": deviceId,
-      "type": Platform.operatingSystem,
-      //'version': Utils.packageInfo.version,
-      "name": name,
-      //"address": ip,
-      //"port": httpPort,
-    };
+      var data = {
+        "id": deviceId,
+        "type": Platform.operatingSystem,
+        //'version': Utils.packageInfo.version,
+        "name": name,
+        //"address": ip,
+        //"port": httpPort,
+      };
 
-    await udp!.send(
-      json.encode(data).codeUnits,
-      Endpoint.broadcast(
-        port: const Port(udpPort),
-      ),
-    );
-    Log.i("send udp info: $data");
+      await udp!.send(
+        utf8.encode(json.encode(data)),
+        Endpoint.broadcast(
+          port: const Port(udpPort),
+        ),
+      );
+    } catch (_) {
+      discoveryError.value = '设备发现暂不可用，可扫码或手动输入地址连接';
+    }
   }
 
   Future<String> getDeviceName() async {
@@ -198,9 +227,19 @@ class SyncService extends GetxService {
     return name;
   }
 
-  void refreshClients() {
+  Future<void> refreshClients() async {
+    if (_closed || discovering.value) return;
+    discovering.value = true;
     scanClients.clear();
-    sendHello();
+    try {
+      await initServer();
+      await sendHello();
+      // Allow sleeping devices and a cold UDP listener to respond.
+      await Future<void>.delayed(const Duration(milliseconds: 750));
+      if (!_closed) await sendHello();
+    } finally {
+      if (!_closed) discovering.value = false;
+    }
   }
 
   /// 读取本地IP
@@ -237,26 +276,32 @@ class SyncService extends GetxService {
   }
 
   /// 初始化HTTP服务
-  void initServer() async {
-    try {
-      var serverRouter = Router();
-      serverRouter.post('/account-pairing', _receivePairedAccount);
-      serverRouter.get('/', _helloRequest);
-      serverRouter.get('/info', _infoRequest);
-      serverRouter.post('/sync/follow', _syncFollowUserReuqest);
-      serverRouter.post('/sync/tag', _syncFollowUserTagRequest);
-      serverRouter.post('/sync/history', _syncHistoryReuqest);
-      serverRouter.post('/sync/blocked_word', _syncBlockedWordReuqest);
-      serverRouter.post('/sync/account/bilibili', _syncBiliAccountReuqest);
+  Future<void> initServer() {
+    if (_closed) return Future.value();
+    return _startingServer ??=
+        _initServer().whenComplete(() => _startingServer = null);
+  }
 
+  Future<void> _initServer() async {
+    if (server != null) {
+      ipAddress.value = await getLocalIP();
+      return;
+    }
+    try {
       server = await shelf_io.serve(
-        serverRouter,
+        createHandler(),
         InternetAddress.anyIPv4,
         httpPort,
       );
 
+      if (_closed) {
+        await server!.close(force: true);
+        server = null;
+        return;
+      }
       // Enable content compression
       server!.autoCompress = true;
+      httpErrorMsg.value = '';
 
       httpRunning.value = true;
 
@@ -265,9 +310,24 @@ class SyncService extends GetxService {
 
       Log.d('Serving at http://$ip:${server!.port}');
     } catch (e) {
-      httpErrorMsg.value = e.toString();
-      Log.logPrint(e);
+      httpRunning.value = server != null;
+      httpErrorMsg.value = '本机同步服务启动失败，请重试并检查是否有其他应用占用端口';
+      Log.w('LocalSync startup failed: ${e.runtimeType}');
     }
+  }
+
+  shelf.Handler createHandler() {
+    var serverRouter = Router();
+    serverRouter.post('/account-pairing', _receivePairedAccount);
+    serverRouter.get('/', _helloRequest);
+    serverRouter.get('/info', _infoRequest);
+    serverRouter.post('/sync/follow', _syncFollowUserReuqest);
+    serverRouter.post('/sync/tag', _syncFollowUserTagRequest);
+    serverRouter.post('/sync/history', _syncHistoryReuqest);
+    serverRouter.post('/sync/blocked_word', _syncBlockedWordReuqest);
+    serverRouter.post('/sync/account/bilibili', _syncBiliAccountReuqest);
+
+    return serverRouter.call;
   }
 
   /// 测试服务能否正常访问
@@ -300,13 +360,12 @@ class SyncService extends GetxService {
           int.parse(request.requestedUri.queryParameters['overlay'] ?? '0');
 
       var body = await request.readAsString();
-      Log.d('_syncFollowUserReuqest: $body');
-      var jsonBody = json.decode(body);
+      final jsonBody = json.decode(body) as List;
+      final items = jsonBody.map((item) => FollowUser.fromJson(item)).toList();
       if (overlay == 1) {
         await DBService.instance.followBox.clear();
       }
-      for (var item in jsonBody) {
-        var user = FollowUser.fromJson(item);
+      for (final user in items) {
         await DBService.instance.followBox.put(user.id, user);
       }
 
@@ -332,13 +391,13 @@ class SyncService extends GetxService {
           int.parse(request.requestedUri.queryParameters['overlay'] ?? '0');
 
       var body = await request.readAsString();
-      Log.d('_syncFollowUserTagRequest: $body');
-      var jsonBody = json.decode(body);
+      final jsonBody = json.decode(body) as List;
+      final items =
+          jsonBody.map((item) => FollowUserTag.fromJson(item)).toList();
       if (overlay == 1) {
         await DBService.instance.tagBox.clear();
       }
-      for (var item in jsonBody) {
-        var tag = FollowUserTag.fromJson(item);
+      for (final tag in items) {
         await DBService.instance.tagBox.put(tag.id, tag);
       }
 
@@ -362,13 +421,12 @@ class SyncService extends GetxService {
       var overlay =
           int.parse(request.requestedUri.queryParameters['overlay'] ?? '0');
       var body = await request.readAsString();
-      Log.d('_syncFollowUserReuqest: $body');
-      var jsonBody = json.decode(body);
+      final jsonBody = json.decode(body) as List;
+      final items = jsonBody.map((item) => History.fromJson(item)).toList();
       if (overlay == 1) {
         await DBService.instance.historyBox.clear();
       }
-      for (var item in jsonBody) {
-        var history = History.fromJson(item);
+      for (final history in items) {
         if (DBService.instance.historyBox.containsKey(history.id)) {
           var old = DBService.instance.historyBox.get(history.id);
           //如果本地的更新时间比较新，就不更新
@@ -399,8 +457,7 @@ class SyncService extends GetxService {
       var overlay =
           int.parse(request.requestedUri.queryParameters['overlay'] ?? '0');
       var body = await request.readAsString();
-      Log.d('_syncBlockedWordReuqest: $body');
-      var jsonBody = json.decode(body);
+      final jsonBody = (json.decode(body) as List).cast<String>().toList();
       if (overlay == 1) {
         AppSettingsController.instance.clearShieldList();
       }
@@ -437,6 +494,7 @@ class SyncService extends GetxService {
 
   @override
   void onClose() {
+    _closed = true;
     cancelAccountPairing();
     Log.d('SyncService close');
     udp?.close();

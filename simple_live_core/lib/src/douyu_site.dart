@@ -19,6 +19,11 @@ import 'package:simple_live_core/src/model/live_category_result.dart';
 import 'package:html_unescape/html_unescape.dart';
 import 'package:simple_live_core/src/scripts/douyu_sign.dart';
 
+class DouyuPlayException extends StateError {
+  final int code;
+  DouyuPlayException(this.code) : super('斗鱼暂时无法提供播放信息（错误码 $code），请稍后重试');
+}
+
 class DouyuSite extends LiveSite {
   DouyuSite() : super(id: "douyu", name: "斗鱼直播");
   late final String _guestDid = generateRandomString(32);
@@ -196,9 +201,8 @@ class DouyuSite extends LiveSite {
     }
     final code = int.tryParse(response['error'].toString());
     if (code != 0) {
-      throw StateError(
-        code == null ? '斗鱼播放接口缺少状态码，请稍后重试' : '斗鱼暂时无法提供播放信息（错误码 $code），请稍后重试',
-      );
+      if (code == null) throw StateError('斗鱼播放接口缺少状态码，请稍后重试');
+      throw DouyuPlayException(code);
     }
     final data = response['data'];
     if (data is! Map) {

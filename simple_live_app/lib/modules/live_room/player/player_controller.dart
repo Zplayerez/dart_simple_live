@@ -75,6 +75,9 @@ mixin PlayerMixin {
   Future<void> initializePlayer([Player? targetPlayer]) async {
     final currentPlayer = targetPlayer ?? player;
     var pp = currentPlayer.platform as NativePlayer;
+    // Live streams only need the bounded memory cache. The bundled Windows
+    // player cannot create its disk cache reliably.
+    await pp.setProperty('cache-on-disk', 'no');
     // 设置音频输出驱动
     if (AppSettingsController.instance.customPlayerOutput.value) {
       if (currentPlayer.platform is NativePlayer) {
@@ -738,6 +741,10 @@ class PlayerController extends BaseController
   int _suppressedDecoderLogs = 0;
 
   void handlePlayerLog(PlayerLog event) {
+    if (PlaybackHealthMonitor.isTimelineError(
+        event.prefix, event.level, event.text)) {
+      mediaTimelineError();
+    }
     if (PlaybackHealthMonitor.isDecoderError(
         event.prefix, event.level, event.text)) {
       mediaDecoderError();
@@ -761,6 +768,22 @@ class PlayerController extends BaseController
   }
 
   void mediaDecoderError() {}
+
+  void mediaTimelineError() {}
+
+  Future<double?> readAvSync() async {
+    final native = player.platform;
+    if (native is! NativePlayer) return null;
+    try {
+      final value = await native
+          .getProperty('avsync')
+          .timeout(const Duration(milliseconds: 500));
+      return double.tryParse(value);
+    } catch (_) {
+      // An unsupported or unavailable measurement is not evidence of failure.
+      return null;
+    }
+  }
 
   void disposeStream() {
     _flushDecoderLogs();

@@ -8,3 +8,4 @@ export 'src/credential_store.dart';
 export 'src/platform_account_manager.dart';
 export 'src/settings_backup_policy.dart';
 export 'src/account_pairing_host.dart';
+export 'src/qr_login.dart' show supportsPlatformQrLogin;

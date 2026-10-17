@@ -25,6 +25,8 @@ class _Site extends LiveSite {
   bool failFetch = false;
   bool? live = true;
   String? returnedQuality;
+  List<String> qualityNames = ['原画'];
+  String? rejectedQuality;
 
   @override
   Future<LiveRoomDetail> getRoomDetail({required String roomId}) async {
@@ -38,21 +40,30 @@ class _Site extends LiveSite {
         userAvatar: '',
         online: 0,
         status: true,
-        url: '');
+        url: '',
+        data: revision);
   }
 
   @override
   Future<List<LivePlayQuality>> getPlayQualites(
           {required LiveRoomDetail detail}) async =>
-      [LivePlayQuality(quality: '原画', data: null)];
+      [
+        for (final name in qualityNames)
+          LivePlayQuality(quality: name, data: null)
+      ];
 
   @override
   Future<LivePlayUrl> getPlayUrls(
-          {required LiveRoomDetail detail,
-          required LivePlayQuality quality}) async =>
-      LivePlayUrl(actualQuality: returnedQuality, urls: [
-        for (final line in lines) 'https://$line.invalid/live.flv?v=$revision',
-      ]);
+      {required LiveRoomDetail detail,
+      required LivePlayQuality quality}) async {
+    if (quality.quality == rejectedQuality) {
+      throw StateError('synthetic quality outage');
+    }
+    return LivePlayUrl(actualQuality: returnedQuality, urls: [
+      for (final line in lines)
+        'https://$line.invalid/live.flv?v=${detail.data}',
+    ]);
+  }
 
   @override
   Future<bool> getLiveStatus({required String roomId}) async {
@@ -90,6 +101,9 @@ class _Room extends LiveRoomController {
     player = Player(platformPlayer: native);
   }
   final _Player native;
+  double? avSync;
+  @override
+  Future<double?> readAvSync() async => avSync;
   DateTime now = DateTime.utc(2026, 10, 7);
   @override
   DateTime get playbackNow => now;
@@ -229,7 +243,7 @@ void main() {
       room.mediaError('repeated failed source');
       room.mediaEnd();
     }
-    await tick(tester, 30, advancing: false);
+    await tick(tester, 20, advancing: false);
     expect(native.opened, hasLength(4));
     expect(site.statusCalls, 1);
     await close(tester);
@@ -420,5 +434,168 @@ void main() {
     await close(tester);
     await tester.pump(const Duration(seconds: 10));
     expect(native.opened, hasLength(2));
+  });
+  testWidgets(
+      'decoder failure changes CDN immediately without lowering quality',
+      (tester) async {
+    await open(tester);
+    await tick(tester, 11, decoderErrors: 15);
+    expect(native.opened, hasLength(2));
+    expect(native.opened.last, startsWith('https://b.invalid/'));
+    expect(room.currentQualityInfo.value, '原画');
+    await tick(tester, 120);
+    expect(native.opened, hasLength(2));
+    await close(tester);
+  });
+
+  for (final measured in <double?>[null, 0.1, 8]) {
+    testWidgets('timestamp reset requires sustained measured desync: $measured',
+        (tester) async {
+      await open(tester);
+      room.avSync = measured;
+      room.handlePlayerLog(const PlayerLog(
+          prefix: 'cplayer',
+          level: 'warn',
+          text: 'Reset playback due to audio timestamp reset.'));
+      await tick(tester, 11);
+      expect(native.opened, hasLength(measured == 8 ? 2 : 1));
+      if (measured == 8) {
+        expect(native.opened.last, startsWith('https://b.invalid/'));
+        expect(room.currentQualityInfo.value, '原画');
+      }
+      await close(tester);
+    });
+  }
+
+  testWidgets('brief desync and paused playback do not reopen', (tester) async {
+    await open(tester);
+    room.avSync = 8;
+    room.mediaTimelineError();
+    await tick(tester, 4);
+    room.avSync = 0.1;
+    await tick(tester, 15);
+    expect(native.opened, hasLength(1));
+    native.state = native.state.copyWith(playing: false);
+    room.avSync = 8;
+    room.mediaTimelineError();
+    await tick(tester, 15, advancing: false);
+    expect(native.opened, hasLength(1));
+    await close(tester);
+  });
+
+  testWidgets('transient provider outage recovers without a connectivity event',
+      (tester) async {
+    await open(tester);
+    await tick(tester, 2);
+    site.failFetch = true;
+    eof();
+    await tester.pump();
+    await tick(tester, 10, advancing: false);
+    expect(native.opened, hasLength(1));
+    expect(site.statusCalls, 1);
+    site.failFetch = false;
+    await tick(tester, 31, advancing: false);
+    expect(native.opened, hasLength(2));
+    expect(native.opened.last, contains('v=2'));
+    expect(room.liveStatus.value, isTrue);
+    expect(room.errorMsg.value, isEmpty);
+    await tick(tester, 180);
+    expect(native.opened, hasLength(2));
+    await close(tester);
+  });
+
+  testWidgets('unknown status backs off without reopening an expired source',
+      (tester) async {
+    await open(tester);
+    await tick(tester, 2);
+    site.failFetch = true;
+    site.live = null;
+    eof();
+    await tester.pump();
+    await tick(tester, 10, advancing: false);
+    expect(site.statusCalls, 1);
+    await tick(tester, 31, advancing: false);
+    expect(site.statusCalls, 2);
+    await tick(tester, 60, advancing: false);
+    expect(site.statusCalls, 3);
+    expect(native.opened, hasLength(1));
+    expect(room.liveStatus.value, isTrue);
+    await close(tester);
+    await tester.pump(const Duration(minutes: 5));
+    expect(site.statusCalls, 3);
+  });
+
+  testWidgets('smooth fallback also refreshes room data before opening',
+      (tester) async {
+    site.qualityNames = ['原画', '高清'];
+    await open(tester);
+    room.smoothPlayback.value = true;
+    await tick(tester, 2);
+    site.rejectedQuality = '原画';
+    eof();
+    await tester.pump();
+    await tick(tester, 10, advancing: false);
+    expect(native.opened, hasLength(2));
+    expect(native.opened.last, contains('v=5'));
+    expect(room.currentQualityInfo.value, '高清');
+    expect(room.errorMsg.value, isEmpty);
+    await tick(tester, 120);
+    expect(native.opened, hasLength(2));
+    await close(tester);
+  });
+
+  testWidgets('failed smooth fallback retains delayed recovery',
+      (tester) async {
+    site.qualityNames = ['原画', '高清'];
+    await open(tester);
+    room.smoothPlayback.value = true;
+    await tick(tester, 2);
+    site.failFetch = true;
+    eof();
+    await tester.pump();
+    await tick(tester, 10, advancing: false);
+    expect(native.opened, hasLength(1));
+    expect(room.errorMsg.value, contains('自动重试'));
+    site.failFetch = false;
+    await tick(tester, 31, advancing: false);
+    expect(native.opened, hasLength(2));
+    expect(native.opened.last, contains('v=2'));
+    expect(room.currentQualityInfo.value, '原画');
+    expect(room.errorMsg.value, isEmpty);
+    await close(tester);
+  });
+
+  testWidgets('confirmed offline cancels slow retries', (tester) async {
+    await open(tester);
+    await tick(tester, 2);
+    site.failFetch = true;
+    site.live = false;
+    eof();
+    await tester.pump();
+    await tick(tester, 300, advancing: false);
+    expect(native.opened, hasLength(1));
+    expect(site.statusCalls, 1);
+    expect(room.liveStatus.value, isFalse);
+    await close(tester);
+  });
+
+  testWidgets('background suspends failed-source probes and resume re-arms one',
+      (tester) async {
+    await open(tester);
+    await tick(tester, 2);
+    site.failFetch = true;
+    eof();
+    await tester.pump();
+    await tick(tester, 10, advancing: false);
+    room.didChangeAppLifecycleState(AppLifecycleState.paused);
+    await tick(tester, 120, advancing: false);
+    expect(site.statusCalls, 1);
+    site.failFetch = false;
+    room.didChangeAppLifecycleState(AppLifecycleState.resumed);
+    room.didChangeAppLifecycleState(AppLifecycleState.resumed);
+    await tick(tester, 31, advancing: false);
+    expect(native.opened, hasLength(2));
+    expect(site.statusCalls, 2);
+    await close(tester);
   });
 }

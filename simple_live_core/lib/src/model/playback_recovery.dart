@@ -5,6 +5,8 @@ class PlaybackRecovery {
   static const _failureMemory = Duration(minutes: 15);
   int attempts = 0;
   bool stopped = false;
+  int probes = 0;
+  Duration get probeDelay => Duration(seconds: 30 << probes.clamp(0, 2));
   String selectionReason = 'preferred';
   final Map<String, _LineFailure> _failedLines = {};
 
@@ -14,6 +16,7 @@ class PlaybackRecovery {
   void reset({bool clearLines = true}) {
     attempts = 0;
     stopped = false;
+    probes = 0;
     if (clearLines) {
       _failedLines.clear();
       selectionReason = 'preferred';
@@ -45,14 +48,19 @@ class PlaybackRecovery {
     return _failedLines[identity]?.recurring ?? false;
   }
 
-  int selectLine(List<String> identities, String? current, DateTime now) {
+  int selectLine(
+    List<String> identities,
+    String? current,
+    DateTime now, {
+    bool preferAlternative = false,
+  }) {
     if (identities.isEmpty) return 0;
     _prune(now);
     final selected = identities.indexOf(current ?? '');
     final recurring = _failedLines[current]?.recurring ?? false;
     // Renew an isolated expired URL once. A healthy minute must not turn a
     // CDN that disconnects every five minutes into a first-time failure again.
-    if (attempts <= 1 && selected >= 0 && !recurring) {
+    if (!preferAlternative && attempts <= 1 && selected >= 0 && !recurring) {
       selectionReason = 'renew-current';
       return selected;
     }
@@ -97,10 +105,12 @@ class PlaybackHealth {
   final bool progressing;
   final bool stable;
   final bool decoderStalled;
+  final bool timelineStalled;
   const PlaybackHealth({
     this.progressing = false,
     this.stable = false,
     this.decoderStalled = false,
+    this.timelineStalled = false,
   });
 }
 
@@ -116,6 +126,14 @@ class PlaybackHealthMonitor {
   DateTime? _decoderSince;
   DateTime? _decoderAt;
   int _decoderErrors = 0;
+  DateTime? _timelineAt;
+  DateTime? _avSyncBadSince;
+
+  void timelineError(DateTime now) => _timelineAt = now;
+
+  bool needsAvSyncSample(DateTime now) =>
+      _timelineAt != null &&
+      now.difference(_timelineAt!) <= const Duration(seconds: 30);
 
   void reset() {
     _sampleAt = null;
@@ -125,6 +143,8 @@ class PlaybackHealthMonitor {
     _decoderSince = null;
     _decoderAt = null;
     _decoderErrors = 0;
+    _timelineAt = null;
+    _avSyncBadSince = null;
   }
 
   void decoderError(DateTime now) {
@@ -144,6 +164,7 @@ class PlaybackHealthMonitor {
     required bool buffering,
     required bool completed,
     bool suspended = false,
+    double? avSyncSeconds,
   }) {
     if (suspended || !playing || completed) {
       reset();
@@ -164,8 +185,19 @@ class PlaybackHealthMonitor {
         _decoderAt != null &&
         now.difference(_decoderAt!) <= const Duration(seconds: 3);
     final progressing = !buffering && advanced;
+    final outOfSync =
+        !buffering &&
+        avSyncSeconds != null &&
+        avSyncSeconds.isFinite &&
+        avSyncSeconds.abs() > 1.5;
+    if (outOfSync) {
+      _avSyncBadSince ??= now;
+    } else {
+      _avSyncBadSince = null;
+    }
     final continuous =
         progressing &&
+        !outOfSync &&
         !recentDecoderError &&
         elapsed != null &&
         position - previous <= elapsed + const Duration(seconds: 2);
@@ -184,11 +216,14 @@ class PlaybackHealthMonitor {
     _sampleAt = now;
     _position = position;
     return PlaybackHealth(
-      progressing: progressing && !recentDecoderError,
+      progressing: progressing && !recentDecoderError && !outOfSync,
       stable:
           _stableSince != null &&
           now.difference(_stableSince!) >= const Duration(minutes: 1),
       decoderStalled: stalled,
+      timelineStalled:
+          _avSyncBadSince != null &&
+          now.difference(_avSyncBadSince!) >= const Duration(seconds: 10),
     );
   }
 
@@ -209,4 +244,10 @@ class PlaybackHealthMonitor {
         message.contains('decode_slice_header error') ||
         message.contains('no frame!');
   }
+
+  static bool isTimelineError(String prefix, String level, String text) =>
+      (level == 'warn' || level == 'error') &&
+      (prefix == 'cplayer' || prefix == 'ad') &&
+      (text.contains('Reset playback due to audio timestamp reset') ||
+          text.contains('Audio/Video desynchronisation detected'));
 }

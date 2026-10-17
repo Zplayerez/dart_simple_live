@@ -4,6 +4,7 @@ import 'package:remixicon/remixicon.dart';
 import 'package:simple_live_app/app/app_style.dart';
 import 'package:simple_live_app/modules/sync/local_sync/device/sync_device_controller.dart';
 import 'package:simple_live_app/widgets/settings/settings_card.dart';
+import 'package:simple_live_app/routes/route_path.dart';
 
 class SyncDevicePage extends GetView<SyncDeviceController> {
   const SyncDevicePage({super.key});
@@ -58,10 +59,11 @@ class SyncDevicePage extends GetView<SyncDeviceController> {
                 AppStyle.divider,
                 ListTile(
                   leading: const Icon(Remix.account_circle_line),
-                  title: const Text("同步哔哩哔哩账号"),
+                  title: const Text("账号同步"),
+                  subtitle: const Text('在账号管理中选择平台，配对后加密传入'),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () {
-                    controller.syncBiliAccount();
+                    Get.toNamed(RoutePath.kSettingsAccount);
                   },
                 ),
               ],

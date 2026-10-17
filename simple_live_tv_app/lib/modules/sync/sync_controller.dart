@@ -12,9 +12,12 @@ import 'package:simple_live_tv_app/models/db/follow_user.dart';
 import 'package:simple_live_tv_app/models/db/history.dart';
 import 'package:simple_live_tv_app/services/db_service.dart';
 import 'package:simple_live_tv_app/services/signalr_service.dart';
+import 'package:simple_live_tv_app/services/sync_service.dart';
 
 class SyncController extends BaseController {
-  final SignalRService signalR = SignalRService();
+  SyncController({SignalRService? remoteService})
+      : signalR = remoteService ?? SignalRService();
+  final SignalRService signalR;
   StreamSubscription? _stateSubscription;
   StreamSubscription? _roomDestroyedSubscription;
   StreamSubscription? _roomUserUpdatedSubscription;
@@ -25,49 +28,67 @@ class SyncController extends BaseController {
   var currentRoomId = "--".obs;
   RxList<RoomUser> roomUsers = <RoomUser>[].obs;
   Timer? _timer;
+  final busy = false.obs;
+  final ready = false.obs;
+  final errorMessage = ''.obs;
+  bool _closed = false;
   var countDown = 600.obs;
 
   Rx<SignalRConnectionState> state =
-      Rx<SignalRConnectionState>(SignalRConnectionState.connecting);
+      Rx<SignalRConnectionState>(SignalRConnectionState.disconnected);
 
   @override
   void onInit() {
-    connect();
+    SyncService.instance.initServer();
+    SyncService.instance.listenUDP();
+    listenSignalR();
     super.onInit();
   }
 
-  void connect() async {
-    listenSignalR();
-    await signalR.connect();
-    if (signalR.state == SignalRConnectionState.connected) {
-      createRoom();
-    }
+  Future<void> refreshLocalConnection() async {
+    await SyncService.instance.initServer();
+    await SyncService.instance.listenUDP();
+    await SyncService.instance.sendInfo();
   }
 
-  void createRoom() async {
+  Future<void> connect() async {
+    if (_closed || busy.value) return;
+    busy.value = true;
+    ready.value = false;
+    errorMessage.value = '';
+    roomUsers.clear();
+    _timer?.cancel();
     try {
-      var resp = await signalR.createRoom();
-      if (resp.isSuccess) {
-        currentRoomId.value = resp.data!;
-        _startTimer();
-      } else {
-        SmartDialog.showToast(resp.message);
-        Get.back();
-      }
-    } catch (e) {
-      SmartDialog.showToast("创建房间失败");
-      Get.back();
+      await signalR.connect();
+      if (_closed) return;
+      final resp = await signalR.createRoom();
+      if (_closed) return;
+      if (!resp.isSuccess) throw RemoteSyncException(resp.message);
+      currentRoomId.value = resp.data!;
+      ready.value = true;
+      _startTimer();
+    } catch (error) {
+      if (_closed) return;
+      errorMessage.value = RemoteSyncException.fromError(error, '创建房间').message;
+      Log.w(
+          'RemoteSync room setup failed: ${error.runtimeType}; ${errorMessage.value}');
+      await signalR.disconnect();
+    } finally {
+      if (!_closed) busy.value = false;
     }
   }
 
   void _startTimer() {
-    // 倒计时5分钟，自动关闭页面
+    // 房间有效期10分钟。
+    _timer?.cancel();
     countDown.value = 600;
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
       countDown--;
       if (countDown <= 0) {
         timer.cancel();
-        Get.back();
+        ready.value = false;
+        errorMessage.value = '远程房间已到期，可以重新创建';
+        signalR.disconnect();
       }
     });
   }
@@ -75,10 +96,19 @@ class SyncController extends BaseController {
   void listenSignalR() {
     _stateSubscription = signalR.stateStream.listen((event) {
       state.value = event;
+      if (!_closed &&
+          !busy.value &&
+          event == SignalRConnectionState.disconnected &&
+          ready.value) {
+        ready.value = false;
+        _timer?.cancel();
+        errorMessage.value = '连接已断开，请重试；局域网同步仍可使用';
+      }
     });
     _roomDestroyedSubscription = signalR.onRoomDestroyedStream.listen((roomId) {
-      SmartDialog.showToast("房间已被销毁");
-      Get.back();
+      ready.value = false;
+      _timer?.cancel();
+      errorMessage.value = '远程房间已关闭，可以重新创建；局域网同步仍可使用';
     });
     _roomUserUpdatedSubscription = signalR.onRoomUserUpdatedStream.listen(
       (roomUsers) {
@@ -165,6 +195,7 @@ class SyncController extends BaseController {
 
   @override
   void onClose() {
+    _closed = true;
     _timer?.cancel();
     _stateSubscription?.cancel();
     _roomDestroyedSubscription?.cancel();

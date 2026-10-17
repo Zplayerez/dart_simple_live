@@ -365,9 +365,9 @@ class DouyinSite extends LiveSite {
       accountSessionVersion: session?.version ?? 0,
       roomId: webRid,
       title: room["title"].toString(),
-      cover: roomStatus ? room["cover"]["url_list"][0].toString() : "",
+      cover: roomStatus ? _roomImage(room["cover"]) : "",
       userName: owner["nickname"].toString(),
-      userAvatar: owner["avatar_thumb"]["url_list"][0].toString(),
+      userAvatar: _roomImage(owner?["avatar_thumb"]),
       online: roomStatus
           ? asT<int?>(room["room_view_stats"]["display_value"]) ?? 0
           : 0,
@@ -392,6 +392,8 @@ class DouyinSite extends LiveSite {
     try {
       var result = await _getRoomDetailByWebRidApi(webRid);
       return result;
+    } on FormatException {
+      CoreLog.d('抖音房间接口信息不完整，尝试网页读取');
     } catch (e) {
       CoreLog.error(e);
     }
@@ -401,12 +403,24 @@ class DouyinSite extends LiveSite {
   /// 通过WebRid访问直播间API，从API中获取直播间信息
   /// - [webRid] 直播间RID
   /// - 返回直播间信息
+  String _roomImage(dynamic value) {
+    if (value is! Map || value['url_list'] is! List) return '';
+    for (final url in value['url_list'] as List) {
+      if (url is String && url.isNotEmpty) return url;
+    }
+    return '';
+  }
+
   Future<LiveRoomDetail> _getRoomDetailByWebRidApi(String webRid) async {
     final session = accountSession;
     // 读取房间信息
     var data = await _getRoomDataByApi(webRid);
 
-    var roomData = data["data"][0];
+    final rooms = data['data'];
+    if (rooms is! List || rooms.isEmpty || rooms.first is! Map) {
+      throw const FormatException('抖音暂未返回房间数据，请稍后重试');
+    }
+    var roomData = rooms.first as Map;
     var userData = data["user"];
     var roomId = roomData["id_str"].toString();
 
@@ -428,13 +442,13 @@ class DouyinSite extends LiveSite {
       accountSessionVersion: session?.version ?? 0,
       roomId: webRid,
       title: roomData["title"].toString(),
-      cover: roomStatus ? roomData["cover"]["url_list"][0].toString() : "",
+      cover: roomStatus ? _roomImage(roomData["cover"]) : "",
       userName: roomStatus
           ? owner["nickname"].toString()
           : userData["nickname"].toString(),
       userAvatar: roomStatus
-          ? owner["avatar_thumb"]["url_list"][0].toString()
-          : userData["avatar_thumb"]["url_list"][0].toString(),
+          ? _roomImage(owner?["avatar_thumb"])
+          : _roomImage(userData?["avatar_thumb"]),
       online: roomStatus
           ? asT<int?>(roomData["room_view_stats"]["display_value"]) ?? 0
           : 0,
@@ -477,13 +491,13 @@ class DouyinSite extends LiveSite {
       accountSessionVersion: session?.version ?? 0,
       roomId: webRid,
       title: room["title"].toString(),
-      cover: roomStatus ? room["cover"]["url_list"][0].toString() : "",
+      cover: roomStatus ? _roomImage(room["cover"]) : "",
       userName: roomStatus
           ? owner["nickname"].toString()
           : anchor["nickname"].toString(),
       userAvatar: roomStatus
-          ? owner["avatar_thumb"]["url_list"][0].toString()
-          : anchor["avatar_thumb"]["url_list"][0].toString(),
+          ? _roomImage(owner?["avatar_thumb"])
+          : _roomImage(anchor?["avatar_thumb"]),
       online: roomStatus
           ? asT<int?>(room["room_view_stats"]["display_value"]) ?? 0
           : 0,
@@ -601,8 +615,8 @@ class DouyinSite extends LiveSite {
       header: requestHeader,
     );
 
-    if (result is! Map) {
-      throw Exception("抖音接口返回格式异常");
+    if (result is! Map || result['data'] is! Map) {
+      throw const FormatException('抖音接口返回格式异常');
     }
 
     return result["data"];

@@ -5,6 +5,7 @@ import 'package:simple_live_app/app/app_style.dart';
 import 'package:simple_live_app/app/utils.dart';
 import 'package:simple_live_app/modules/sync/remote_sync/room/remote_sync_room_controller.dart';
 import 'package:simple_live_app/services/signalr_service.dart';
+import 'package:simple_live_app/routes/route_path.dart';
 import 'package:simple_live_app/widgets/settings/settings_card.dart';
 
 class RemoteSyncRoomPage extends GetView<RemoteSyncRoomController> {
@@ -89,184 +90,205 @@ class RemoteSyncRoomPage extends GetView<RemoteSyncRoomController> {
           ),
         ],
       ),
-      body: ListView(
-        padding: AppStyle.edgeInsetsA12.copyWith(top: 0),
-        children: [
-          Visibility(
-            visible: controller.roomId.isEmpty,
-            child: SettingsCard(
-              child: ListTile(
-                visualDensity: VisualDensity.compact,
-                leading: const Icon(Remix.timer_line),
-                title: Obx(
-                  () => Text(
-                    "${controller.countDown.value}秒后房间将会自动关闭",
-                    style: const TextStyle(fontSize: 14),
+      body: Obx(() {
+        if (!controller.ready.value) {
+          return Center(
+              child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              if (controller.busy.value) ...[
+                const CircularProgressIndicator(),
+                const SizedBox(height: 20),
+                Text(controller.roomId.isEmpty ? '正在创建房间…' : '正在加入房间…'),
+              ] else ...[
+                const Icon(Icons.cloud_off_outlined, size: 48),
+                const SizedBox(height: 20),
+                Text(controller.errorMessage.value,
+                    textAlign: TextAlign.center),
+                const SizedBox(height: 20),
+                FilledButton(
+                    onPressed: controller.connect, child: const Text('重试')),
+                TextButton(
+                    onPressed: () => Get.offNamed(RoutePath.kLocalSync),
+                    child: const Text('使用局域网同步')),
+                TextButton(
+                    onPressed: () => Get.offNamed(RoutePath.kRemoteSyncWebDav),
+                    child: const Text('使用 WebDAV 同步')),
+              ],
+            ]),
+          ));
+        }
+        return ListView(
+          padding: AppStyle.edgeInsetsA12.copyWith(top: 0),
+          children: [
+            Visibility(
+              visible: controller.roomId.isEmpty,
+              child: SettingsCard(
+                child: ListTile(
+                  visualDensity: VisualDensity.compact,
+                  leading: const Icon(Remix.timer_line),
+                  title: Obx(
+                    () => Text(
+                      "${controller.countDown.value}秒后房间将会自动关闭",
+                      style: const TextStyle(fontSize: 14),
+                    ),
                   ),
                 ),
               ),
             ),
-          ),
-          Padding(
-            padding: AppStyle.edgeInsetsA12,
-            child: Text(
-              "房间号",
-              style: Get.textTheme.titleSmall,
+            Padding(
+              padding: AppStyle.edgeInsetsA12,
+              child: Text(
+                "房间号",
+                style: Get.textTheme.titleSmall,
+              ),
             ),
-          ),
-          SettingsCard(
-            child: Obx(
-              () => ListTile(
-                contentPadding: AppStyle.edgeInsetsL12,
-                title: SelectableText(
-                  controller.currentRoomId.value,
-                  style: Theme.of(context).textTheme.titleLarge,
-                ),
-                trailing: Row(
-                  crossAxisAlignment: CrossAxisAlignment.center,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    IconButton(
-                      icon: const Icon(
-                        Icons.copy,
-                        size: 20,
+            SettingsCard(
+              child: Obx(
+                () => ListTile(
+                  contentPadding: AppStyle.edgeInsetsL12,
+                  title: SelectableText(
+                    controller.currentRoomId.value,
+                    style: Theme.of(context).textTheme.titleLarge,
+                  ),
+                  trailing: Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        icon: const Icon(
+                          Icons.copy,
+                          size: 20,
+                        ),
+                        onPressed: () {
+                          Utils.copyToClipboard(controller.currentRoomId.value);
+                        },
                       ),
-                      onPressed: () {
-                        Utils.copyToClipboard(controller.currentRoomId.value);
-                      },
-                    ),
-                    IconButton(
-                      icon: const Icon(
-                        Icons.qr_code,
-                        size: 20,
+                      IconButton(
+                        icon: const Icon(
+                          Icons.qr_code,
+                          size: 20,
+                        ),
+                        onPressed: () {
+                          controller.showQRInfo();
+                        },
                       ),
-                      onPressed: () {
-                        controller.showQRInfo();
-                      },
-                    ),
-                    AppStyle.hGap4,
-                  ],
+                      AppStyle.hGap4,
+                    ],
+                  ),
                 ),
               ),
             ),
-          ),
-          Padding(
-            padding: AppStyle.edgeInsetsA12.copyWith(top: 12),
-            child: Text(
-              "同步数据至其他设备",
-              style: Get.textTheme.titleSmall,
+            Padding(
+              padding: AppStyle.edgeInsetsA12.copyWith(top: 12),
+              child: Text(
+                "同步数据至其他设备",
+                style: Get.textTheme.titleSmall,
+              ),
             ),
-          ),
-          SettingsCard(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                ListTile(
-                  leading: const Icon(Remix.heart_line),
-                  title: const Text("发送关注列表"),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () {
-                    controller.syncFollow();
-                  },
-                ),
-                AppStyle.divider,
-                ListTile(
-                  leading: const Icon(Icons.history),
-                  title: const Text("发送观看记录"),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () {
-                    controller.syncHistory();
-                  },
-                ),
-                AppStyle.divider,
-                ListTile(
-                  leading: const Icon(Remix.shield_keyhole_line),
-                  title: const Text("发送弹幕屏蔽词"),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () {
-                    controller.syncBlockedWord();
-                  },
-                ),
-                AppStyle.divider,
-                ListTile(
-                  leading: const Icon(Remix.account_circle_line),
-                  title: const Text("发送哔哩哔哩账号"),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () {
-                    controller.syncBiliAccount();
-                  },
-                ),
-              ],
+            SettingsCard(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  ListTile(
+                    leading: const Icon(Remix.heart_line),
+                    title: const Text("发送关注列表"),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () {
+                      controller.syncFollow();
+                    },
+                  ),
+                  AppStyle.divider,
+                  ListTile(
+                    leading: const Icon(Icons.history),
+                    title: const Text("发送观看记录"),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () {
+                      controller.syncHistory();
+                    },
+                  ),
+                  AppStyle.divider,
+                  ListTile(
+                    leading: const Icon(Remix.shield_keyhole_line),
+                    title: const Text("发送弹幕屏蔽词"),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () {
+                      controller.syncBlockedWord();
+                    },
+                  ),
+                ],
+              ),
             ),
-          ),
-          Padding(
-            padding: AppStyle.edgeInsetsA12.copyWith(top: 12),
-            child: Text(
-              "已连接设备",
-              style: Get.textTheme.titleSmall,
+            Padding(
+              padding: AppStyle.edgeInsetsA12.copyWith(top: 12),
+              child: Text(
+                "已连接设备",
+                style: Get.textTheme.titleSmall,
+              ),
             ),
-          ),
-          SettingsCard(
-            child: Obx(
-              () => ListView.separated(
-                padding: EdgeInsets.zero,
-                itemCount: controller.roomUsers.length,
-                shrinkWrap: true,
-                separatorBuilder: (context, index) => AppStyle.divider,
-                physics: const NeverScrollableScrollPhysics(),
-                itemBuilder: (BuildContext context, int index) {
-                  var user = controller.roomUsers[index];
-                  return ListTile(
-                    visualDensity: VisualDensity.compact,
-                    leading: SizedBox(
-                      width: 48,
-                      height: 48,
-                      child: Center(
-                        child: buildIcon(user.platform),
+            SettingsCard(
+              child: Obx(
+                () => ListView.separated(
+                  padding: EdgeInsets.zero,
+                  itemCount: controller.roomUsers.length,
+                  shrinkWrap: true,
+                  separatorBuilder: (context, index) => AppStyle.divider,
+                  physics: const NeverScrollableScrollPhysics(),
+                  itemBuilder: (BuildContext context, int index) {
+                    var user = controller.roomUsers[index];
+                    return ListTile(
+                      visualDensity: VisualDensity.compact,
+                      leading: SizedBox(
+                        width: 48,
+                        height: 48,
+                        child: Center(
+                          child: buildIcon(user.platform),
+                        ),
                       ),
-                    ),
-                    title: Text.rich(
-                      TextSpan(
-                        text: user.shortId,
-                        style: const TextStyle(fontSize: 16),
-                        children: user.isCreator!
-                            ? [
-                                WidgetSpan(
-                                  child: Container(
-                                    margin: AppStyle.edgeInsetsL4,
-                                    padding: AppStyle.edgeInsetsH4,
-                                    decoration: BoxDecoration(
-                                      border: Border.all(color: Colors.blue),
-                                      borderRadius: BorderRadius.circular(4),
-                                    ),
-                                    child: const Text(
-                                      "创建者",
-                                      style: TextStyle(
-                                        color: Colors.blue,
-                                        fontSize: 12,
+                      title: Text.rich(
+                        TextSpan(
+                          text: user.shortId,
+                          style: const TextStyle(fontSize: 16),
+                          children: user.isCreator!
+                              ? [
+                                  WidgetSpan(
+                                    child: Container(
+                                      margin: AppStyle.edgeInsetsL4,
+                                      padding: AppStyle.edgeInsetsH4,
+                                      decoration: BoxDecoration(
+                                        border: Border.all(color: Colors.blue),
+                                        borderRadius: BorderRadius.circular(4),
+                                      ),
+                                      child: const Text(
+                                        "创建者",
+                                        style: TextStyle(
+                                          color: Colors.blue,
+                                          fontSize: 12,
+                                        ),
                                       ),
                                     ),
                                   ),
-                                ),
-                              ]
-                            : null,
+                                ]
+                              : null,
+                        ),
                       ),
-                    ),
-                    subtitle: Text("${user.app} - v${user.version}"),
-                    trailing: Visibility(
-                      visible: controller.signalR.hubConnection?.connectionId ==
-                          user.connectionId,
-                      child: const Text(
-                        "本机",
+                      subtitle: Text("${user.app} - v${user.version}"),
+                      trailing: Visibility(
+                        visible:
+                            controller.signalR.hubConnection?.connectionId ==
+                                user.connectionId,
+                        child: const Text(
+                          "本机",
+                        ),
                       ),
-                    ),
-                  );
-                },
+                    );
+                  },
+                ),
               ),
-            ),
-          )
-        ],
-      ),
+            )
+          ],
+        );
+      }),
     );
   }
 

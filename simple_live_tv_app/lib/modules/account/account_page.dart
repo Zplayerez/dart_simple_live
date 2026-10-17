@@ -9,7 +9,7 @@ import 'package:simple_live_tv_app/app/app_focus_node.dart';
 import 'package:simple_live_tv_app/app/app_style.dart';
 import 'package:simple_live_tv_app/app/utils.dart';
 import 'package:simple_live_tv_app/modules/account/cookie_import_dialog.dart';
-import 'package:simple_live_tv_app/routes/app_navigation.dart';
+import 'package:simple_live_account/widgets/platform_qr_login_page.dart';
 import 'package:simple_live_tv_app/services/sync_service.dart';
 import 'package:simple_live_tv_app/widgets/app_scaffold.dart';
 import 'package:simple_live_tv_app/widgets/button/highlight_button.dart';
@@ -164,26 +164,30 @@ class _AccountPageState extends State<AccountPage> {
                         ),
                         AppStyle.vGap24,
                         if (busy) const LinearProgressIndicator(),
-                        if (widget.siteId == 'bilibili') ...[
+                        if (supportsPlatformQrLogin(widget.siteId)) ...[
                           HighlightListTile(
                             focusNode: _qrFocus,
                             autofocus: true,
                             title: '扫码登录',
-                            subtitle: '使用哔哩哔哩 App 扫描二维码',
+                            subtitle:
+                                '使用${accountPlatformName(widget.siteId)} App 扫码，自动完成登录',
                             leading: const Icon(Icons.qr_code),
                             onTap: busy
                                 ? null
                                 : () {
-                                    AppNavigator.toBiliBiliLogin();
+                                    Get.to(() => PlatformQrLoginPage(
+                                        siteId: widget.siteId));
                                   },
                           ),
                           AppStyle.vGap24,
                         ],
                         HighlightListTile(
                           focusNode: _receiveFocus,
-                          autofocus: widget.siteId != 'bilibili',
+                          autofocus: !supportsPlatformQrLogin(widget.siteId),
                           title: '从其他设备接收账号',
-                          subtitle: '手机或电脑配对，确认后加密传入',
+                          subtitle: widget.siteId == 'douyin'
+                              ? '先在手机或电脑的 Simple Live 中网页登录抖音，再配对传入'
+                              : '手机或电脑配对，确认后加密传入',
                           leading: const Icon(Icons.devices),
                           onTap: busy
                               ? null
