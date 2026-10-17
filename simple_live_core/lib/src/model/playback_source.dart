@@ -53,11 +53,20 @@ class PlaybackSource {
       qualities = List.of(previousQualities);
     }
     if (qualities.isEmpty) throw StateError('暂时无法获取清晰度');
-    if (!allowQualityFallback &&
-        !qualities.any((q) => q.quality == selected.quality)) {
+    // Douyu can rename 原画 to 原画1080P60 while rate=0 remains unchanged.
+    // Match its stable rate and use the fresh quality/CDNs, never the old URL.
+    final selectedData = selected.data;
+    var index = qualities.indexWhere((quality) {
+      final data = quality.data;
+      if (site is DouyuSite && selectedData is DouyuPlayData) {
+        return data is DouyuPlayData && data.rate == selectedData.rate;
+      }
+      return quality.quality == selected.quality;
+    });
+    if (!allowQualityFallback && index < 0) {
       throw StateError('所选画质暂时不可用，请重新选择画质');
     }
-    final index = qualityIndexFor(qualities, selected.quality);
+    if (index < 0) index = 0;
     final urls = await site.getPlayUrls(
       detail: detail,
       quality: qualities[index],

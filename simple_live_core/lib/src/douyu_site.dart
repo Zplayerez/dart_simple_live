@@ -30,8 +30,9 @@ class DouyuSite extends LiveSite {
 
   Map<String, String> _sessionHeaders(
     String roomId,
-    LiveAccountSession? session,
-  ) {
+    LiveAccountSession? session, {
+    bool legacyPlaybackAuth = false,
+  }) {
     final uri = Uri.parse('https://www.douyu.com/$roomId');
     final did = session?.deviceId ?? _guestDid;
     final cookies = <String, String>{
@@ -39,6 +40,10 @@ class DouyuSite extends LiveSite {
       'dy_did': did,
       'acf_did': did,
     };
+    // getH5Play can prioritize an unusable dy_auth over a still-valid acf_auth.
+    // Only the compatibility playback retry omits it; stored login and other
+    // official requests retain the complete session.
+    if (legacyPlaybackAuth) cookies.remove('dy_auth');
     return accountRequestHeaders(session, {
       'cookie': cookies.entries.map((e) => '${e.key}=${e.value}').join('; '),
       'referer': uri.toString(),
@@ -287,12 +292,18 @@ class DouyuSite extends LiveSite {
     String args,
     int rate,
     String cdn,
-    LiveAccountSession? session,
-  ) async {
+    LiveAccountSession? session, {
+    bool legacyPlaybackAuth = false,
+  }) async {
+    final elapsed = Stopwatch()..start();
     final result = await HttpClient.instance.postJson(
       'https://www.douyu.com/lapi/live/getH5Play/$roomId',
       data: '$args&cdn=${Uri.encodeQueryComponent(cdn)}&rate=$rate',
-      header: _sessionHeaders(roomId, session),
+      header: _sessionHeaders(
+        roomId,
+        session,
+        legacyPlaybackAuth: legacyPlaybackAuth,
+      ),
       formUrlEncoded: true,
     );
     final data = _playResponseData(result);
@@ -332,7 +343,7 @@ class DouyuSite extends LiveSite {
         ? legacyExpiry
         : null;
     final returnedCdn = data['rtmp_cdn'] ?? data['cdn'];
-    return (
+    final source = (
       url,
       LivePlayUrlInfo(
         actualRate: actualRate,
@@ -344,6 +355,29 @@ class DouyuSite extends LiveSite {
         expiresInSeconds: expiresInSeconds,
       ),
     );
+    if (!legacyPlaybackAuth &&
+        actualRate != null &&
+        actualRate != rate &&
+        session?.cookie.values['acf_auth']?.isNotEmpty == true &&
+        session?.cookie.values['dy_auth']?.isNotEmpty == true &&
+        elapsed.elapsed < const Duration(seconds: 3)) {
+      try {
+        // One retry, using the same account, DID and signature. Leave room in
+        // the six-second CDN budget and keep the first usable stream on error.
+        final compatible = await _getPlayUrlResult(
+          roomId,
+          args,
+          rate,
+          cdn,
+          session,
+          legacyPlaybackAuth: true,
+        ).timeout(const Duration(seconds: 2));
+        if (compatible.$2.actualRate == rate) return compatible;
+      } catch (_) {
+        // A compatibility failure must not discard the provider's valid URL.
+      }
+    }
+    return source;
   }
 
   @override
