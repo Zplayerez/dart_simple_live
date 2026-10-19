@@ -19,11 +19,7 @@ class HuyaDanmakuArgs {
   });
   @override
   String toString() {
-    return json.encode({
-      "ayyuid": ayyuid,
-      "topSid": topSid,
-      "subSid": subSid,
-    });
+    return json.encode({"ayyuid": ayyuid, "topSid": topSid, "subSid": subSid});
   }
 }
 
@@ -72,8 +68,11 @@ class HuyaDanmaku implements LiveDanmaku {
   }
 
   void joinRoom() {
-    var joinData =
-        getJoinData(danmakuArgs.ayyuid, danmakuArgs.topSid, danmakuArgs.topSid);
+    var joinData = getJoinData(
+      danmakuArgs.ayyuid,
+      danmakuArgs.topSid,
+      danmakuArgs.topSid,
+    );
     webScoketUtils?.sendMessage(joinData);
   }
 
@@ -121,8 +120,12 @@ class HuyaDanmaku implements LiveDanmaku {
         wSPushMessage.readFrom(stream);
         if (wSPushMessage.uri == 1400) {
           HYMessage messageNotice = HYMessage();
-          messageNotice
-              .readFrom(TarsInputStream(Uint8List.fromList(wSPushMessage.msg)));
+          messageNotice.readFrom(
+            TarsInputStream(
+              Uint8List.fromList(wSPushMessage.msg),
+              allowMalformedStrings: true,
+            ),
+          );
           var uname = messageNotice.userInfo.nickName;
           var content = messageNotice.content;
 

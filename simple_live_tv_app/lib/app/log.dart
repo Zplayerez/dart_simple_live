@@ -1,3 +1,4 @@
+import 'package:simple_live_core/simple_live_core.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
@@ -18,22 +19,29 @@ class Log {
   );
 
   static void d(String message) {
+    message = LogRedactor.redact(message);
     logger.d("${DateTime.now().toString()}\n$message");
   }
 
   static void i(String message) {
+    message = LogRedactor.redact(message);
     logger.i("${DateTime.now().toString()}\n$message");
   }
 
   static void e(String message, StackTrace stackTrace) {
+    message = LogRedactor.redact(message);
+    stackTrace =
+        StackTrace.fromString(LogRedactor.redact(stackTrace.toString()));
     logger.e("${DateTime.now().toString()}\n$message", stackTrace: stackTrace);
   }
 
   static void w(String message) {
+    message = LogRedactor.redact(message);
     logger.w("${DateTime.now().toString()}\n$message");
   }
 
   static void logPrint(dynamic obj) {
+    obj = LogRedactor.redact(obj.toString());
     //logger.e(obj.toString(), obj, obj?.stackTrace);
     if (kDebugMode) {
       print(obj);

@@ -1,4 +1,7 @@
+import 'dart:async';
 import 'dart:convert';
+
+import 'package:simple_live_account/simple_live_account.dart';
 import 'dart:io';
 
 import 'package:device_info_plus/device_info_plus.dart';
@@ -12,7 +15,6 @@ import 'package:simple_live_tv_app/app/log.dart';
 import 'package:simple_live_tv_app/app/utils.dart';
 import 'package:simple_live_tv_app/models/db/follow_user.dart';
 import 'package:simple_live_tv_app/models/db/history.dart';
-import 'package:simple_live_tv_app/services/bilibili_account_service.dart';
 import 'package:simple_live_tv_app/services/db_service.dart';
 import 'package:udp/udp.dart';
 import 'package:shelf/shelf.dart' as shelf;
@@ -22,6 +24,55 @@ import 'package:uuid/uuid.dart';
 
 class SyncService extends GetxService {
   static SyncService get instance => Get.find<SyncService>();
+
+  AccountPairingHost? _accountPairing;
+  int _pairingGeneration = 0;
+
+  Future<AccountPairingReceiver> startAccountPairing(String siteId,
+      Future<bool> Function() confirm, void Function(String) onStatus) async {
+    if (!httpRunning.value) throw StateError('本机同步服务不可用');
+    final generation = ++_pairingGeneration;
+    final addresses = (await getLocalIP()).split(';');
+    if (generation != _pairingGeneration) throw StateError('配对已取消');
+    final address = addresses
+        .firstWhere((value) => InternetAddress.tryParse(value) != null);
+    _accountPairing ??= AccountPairingHost(PlatformAccountManager.instance);
+    return _accountPairing!.start(
+        Uri(
+            scheme: 'http',
+            host: address,
+            port: httpPort,
+            path: '/account-pairing'),
+        siteId,
+        confirm: confirm,
+        onStatus: onStatus);
+  }
+
+  void cancelAccountPairing() {
+    _pairingGeneration++;
+    _accountPairing?.cancel();
+  }
+
+  Future<shelf.Response> _receivePairedAccount(shelf.Request request) async {
+    final host = _accountPairing;
+    if (host == null ||
+        (request.contentLength ?? 0) > accountPairingMaxPayloadBytes) {
+      return toJsonResponse({'status': false, 'message': '请在账号管理中打开配对页面'});
+    }
+    try {
+      final bytes = <int>[];
+      await for (final chunk
+          in request.read().timeout(const Duration(seconds: 10))) {
+        if (bytes.length + chunk.length > accountPairingMaxPayloadBytes) {
+          return shelf.Response(413);
+        }
+        bytes.addAll(chunk);
+      }
+      return toJsonResponse(await host.receive(utf8.decode(bytes)));
+    } catch (_) {
+      return toJsonResponse({'status': false, 'message': '配对请求无效'});
+    }
+  }
 
   UDP? udp;
   static const int udpPort = 23235;
@@ -35,6 +86,11 @@ class SyncService extends GetxService {
   var httpErrorMsg = "".obs;
 
   var deviceId = "";
+  final discoveryError = ''.obs;
+  final discovering = false.obs;
+  Future<void>? _startingUdp;
+  Future<void>? _startingServer;
+  bool _closed = false;
   @override
   void onInit() {
     Log.d('SyncService init');
@@ -46,59 +102,82 @@ class SyncService extends GetxService {
 
   /// 监听来自其他客户端的UDP广播
   /// - 如果收到广播，回复自己的信息
-  void listenUDP() async {
-    udp = await UDP.bind(Endpoint.any(port: const Port(udpPort)));
-    udp!.asStream().listen((datagram) {
-      var str = String.fromCharCodes(datagram!.data);
-      Log.i("Received: $str from ${datagram.address}:${datagram.port}");
-      if (str.startsWith('{') && str.endsWith('}')) {
-        var data = json.decode(str);
+  Future<void> listenUDP() {
+    if (_closed || udp != null) return Future.value();
+    return _startingUdp ??= _bindUdp().whenComplete(() => _startingUdp = null);
+  }
 
-        //处理Hello的广播
-        if (data["type"] == "hello") {
-          //如果http服务已经启动，就回复自己的信息
-          if (httpRunning.value) {
+  Future<void> _bindUdp() async {
+    try {
+      final socket = await UDP.bind(Endpoint.any(port: const Port(udpPort)));
+      if (_closed) {
+        socket.close();
+        return;
+      }
+      udp = socket;
+      discoveryError.value = '';
+      socket.asStream().listen((datagram) {
+        if (_closed || datagram == null || datagram.data.length > 8192) return;
+        try {
+          final text = utf8.decode(datagram.data);
+          if (text == 'Who is SimpleLive?') {
+            if (httpRunning.value) {
+              sendInfo();
+            }
+            return;
+          }
+          final data = jsonDecode(text);
+          if (data is Map &&
+              data['id'] != deviceId &&
+              data['type'] == 'hello' &&
+              httpRunning.value) {
             sendInfo();
           }
-          return;
-        }
-      } else if (str == 'Who is SimpleLive?') {
-        //如果http服务已经启动，就回复自己的信息
-        if (httpRunning.value) {
-          sendInfo();
-        }
-      }
-    });
+        } catch (_) {/* Ignore unrelated broadcast packets. */}
+      }, onError: (_) {
+        discoveryError.value = '设备发现暂不可用，请扫描局域网二维码';
+      });
+    } catch (_) {
+      discoveryError.value = '设备发现暂不可用，请扫描局域网二维码';
+    }
   }
 
   /// 发送自己的信息
-  void sendInfo() async {
-    //var ip = await getLocalIP();
+  Future<void> sendInfo() async {
+    if (_closed || udp == null) return;
+    try {
+      //var ip = await getLocalIP();
 
-    var name = await getDeviceName();
+      var name = await getDeviceName();
+      if (_closed || udp == null) return;
 
-    var data = {
-      "id": deviceId,
-      "type": "tv",
-      "name": name,
-      //"address": ip,
-      //"port": httpPort,
-    };
+      var data = {
+        "id": deviceId,
+        "type": "tv",
+        "name": name,
+        //"address": ip,
+        //"port": httpPort,
+      };
 
-    await udp!.send(
-      json.encode(data).codeUnits,
-      Endpoint.broadcast(
-        port: const Port(udpPort),
-      ),
-    );
-    Log.i("send udp info: $data");
+      await udp!.send(
+        utf8.encode(json.encode(data)),
+        Endpoint.broadcast(
+          port: const Port(udpPort),
+        ),
+      );
+    } catch (_) {
+      discoveryError.value = '设备发现暂不可用，可扫码或手动输入地址连接';
+    }
   }
 
   /// 读取本地IP
   /// - 如果是wifi，直接获取wifi的IP
   /// - 如果是有线，获取所有的IP，找到全部的IP
   Future<String> getLocalIP() async {
-    var ip = await networkInfo.getWifiIP();
+    String? ip;
+    try {
+      ip = await networkInfo.getWifiIP();
+    } catch (_) {/* Try wired interfaces below. */}
     if (ip == null || ip.isEmpty) {
       var interfaces = await NetworkInterface.list();
       var ipList = <String>[];
@@ -140,35 +219,57 @@ class SyncService extends GetxService {
   }
 
   /// 初始化HTTP服务
-  void initServer() async {
-    try {
-      var serverRouter = Router();
-      serverRouter.get('/', _helloRequest);
-      serverRouter.get('/info', _infoRequest);
-      serverRouter.post('/sync/follow', _syncFollowUserReuqest);
-      serverRouter.post('/sync/history', _syncHistoryReuqest);
-      serverRouter.post('/sync/blocked_word', _syncBlockedWordReuqest);
-      serverRouter.post('/sync/account/bilibili', _syncBiliAccountReuqest);
+  Future<void> initServer() {
+    if (_closed) return Future.value();
+    return _startingServer ??=
+        _initServer().whenComplete(() => _startingServer = null);
+  }
 
-      var server = await shelf_io.serve(
-        serverRouter,
+  Future<void> _initServer() async {
+    if (server != null) {
+      ipAddress.value = await getLocalIP();
+      return;
+    }
+    try {
+      server = await shelf_io.serve(
+        createHandler(),
         InternetAddress.anyIPv4,
         httpPort,
       );
 
+      if (_closed) {
+        await server!.close(force: true);
+        server = null;
+        return;
+      }
       // Enable content compression
-      server.autoCompress = true;
+      server!.autoCompress = true;
+      httpErrorMsg.value = '';
 
       httpRunning.value = true;
 
       var ip = await getLocalIP();
       ipAddress.value = ip;
 
-      Log.d('Serving at http://$ip:${server.port}');
+      Log.d('Serving at http://$ip:${server!.port}');
     } catch (e) {
-      httpErrorMsg.value = e.toString();
-      Log.logPrint(e);
+      httpRunning.value = server != null;
+      httpErrorMsg.value = '本机同步服务启动失败，请重试并检查是否有其他应用占用端口';
+      Log.w('LocalSync startup failed: ${e.runtimeType}');
     }
+  }
+
+  shelf.Handler createHandler() {
+    var serverRouter = Router();
+    serverRouter.post('/account-pairing', _receivePairedAccount);
+    serverRouter.get('/', _helloRequest);
+    serverRouter.get('/info', _infoRequest);
+    serverRouter.post('/sync/follow', _syncFollowUserReuqest);
+    serverRouter.post('/sync/history', _syncHistoryReuqest);
+    serverRouter.post('/sync/blocked_word', _syncBlockedWordReuqest);
+    serverRouter.post('/sync/account/bilibili', _syncBiliAccountReuqest);
+
+    return serverRouter.call;
   }
 
   /// 测试服务能否正常访问
@@ -201,13 +302,12 @@ class SyncService extends GetxService {
           int.parse(request.requestedUri.queryParameters['overlay'] ?? '0');
 
       var body = await request.readAsString();
-      Log.d('_syncFollowUserReuqest: $body');
-      var jsonBody = json.decode(body);
+      final jsonBody = json.decode(body) as List;
+      final items = jsonBody.map((item) => FollowUser.fromJson(item)).toList();
       if (overlay == 1) {
         await DBService.instance.followBox.clear();
       }
-      for (var item in jsonBody) {
-        var user = FollowUser.fromJson(item);
+      for (final user in items) {
         await DBService.instance.followBox.put(user.id, user);
       }
 
@@ -231,13 +331,12 @@ class SyncService extends GetxService {
       var overlay =
           int.parse(request.requestedUri.queryParameters['overlay'] ?? '0');
       var body = await request.readAsString();
-      Log.d('_syncFollowUserReuqest: $body');
-      var jsonBody = json.decode(body);
+      final jsonBody = json.decode(body) as List;
+      final items = jsonBody.map((item) => History.fromJson(item)).toList();
       if (overlay == 1) {
         await DBService.instance.historyBox.clear();
       }
-      for (var item in jsonBody) {
-        var history = History.fromJson(item);
+      for (final history in items) {
         if (DBService.instance.historyBox.containsKey(history.id)) {
           var old = DBService.instance.historyBox.get(history.id);
           //如果本地的更新时间比较新，就不更新
@@ -268,8 +367,7 @@ class SyncService extends GetxService {
       var overlay =
           int.parse(request.requestedUri.queryParameters['overlay'] ?? '0');
       var body = await request.readAsString();
-      Log.d('_syncBlockedWordReuqest: $body');
-      var jsonBody = json.decode(body);
+      final jsonBody = (json.decode(body) as List).cast<String>().toList();
       if (overlay == 1) {
         AppSettingsController.instance.clearShieldList();
       }
@@ -291,24 +389,7 @@ class SyncService extends GetxService {
 
   /// 同步哔哩哔哩账号
   Future<shelf.Response> _syncBiliAccountReuqest(shelf.Request request) async {
-    try {
-      var body = await request.readAsString();
-      Log.d('_syncBiliAccountReuqest: $body');
-      var jsonBody = json.decode(body);
-      var cookie = jsonBody['cookie'];
-      BiliBiliAccountService.instance.setCookie(cookie);
-      BiliBiliAccountService.instance.loadUserInfo();
-      SmartDialog.showToast('已同步哔哩哔哩账号');
-      return toJsonResponse({
-        'status': true,
-        'message': 'success',
-      });
-    } catch (e) {
-      return toJsonResponse({
-        'status': false,
-        'message': e.toString(),
-      });
-    }
+    return toJsonResponse({'status': false, 'message': '请在账号管理中使用加密配对接收'});
   }
 
   shelf.Response toJsonResponse(Map<String, dynamic> data) {
@@ -323,6 +404,8 @@ class SyncService extends GetxService {
 
   @override
   void onClose() {
+    _closed = true;
+    cancelAccountPairing();
     Log.d('SyncService close');
     udp?.close();
     server?.close(force: true);

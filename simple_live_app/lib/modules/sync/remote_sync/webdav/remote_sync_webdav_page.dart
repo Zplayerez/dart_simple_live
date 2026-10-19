@@ -124,7 +124,7 @@ class RemoteSyncWebDAVPage extends GetView<RemoteSyncWebDAVController> {
           Obx(
             () => CheckboxListTile(
               secondary: const Icon(Remix.account_circle_line),
-              title: const Text("同步哔哩哔哩账号"),
+              title: const Text("导入旧版备份中的哔哩哔哩账号"),
               value: controller.isSyncBilibiliAccount.value,
               controlAffinity: ListTileControlAffinity.trailing,
               onChanged: (value) => controller.changeIsSyncBilibiliAccount(),

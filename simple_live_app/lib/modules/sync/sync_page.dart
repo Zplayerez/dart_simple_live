@@ -42,7 +42,7 @@ class SyncPage extends StatelessWidget {
           Padding(
             padding: AppStyle.edgeInsetsA12.copyWith(top: 0),
             child: Text(
-              "远程同步",
+              "局域网同步",
               style: Get.textTheme.titleSmall,
             ),
           ),
@@ -50,9 +50,31 @@ class SyncPage extends StatelessWidget {
             child: Column(
               children: [
                 ListTile(
-                  title: const Text("创建房间"),
+                  title: const Text("连接同一 Wi-Fi 下的设备"),
+                  subtitle: const Text("同一 Wi-Fi 下自动发现设备或扫码连接，无需创建房间"),
+                  leading: const Icon(Remix.device_line),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () {
+                    Get.toNamed(RoutePath.kLocalSync);
+                  },
+                ),
+              ],
+            ),
+          ),
+          Padding(
+            padding: AppStyle.edgeInsetsA12.copyWith(top: 24),
+            child: Text(
+              "不同网络之间同步",
+              style: Get.textTheme.titleSmall,
+            ),
+          ),
+          SettingsCard(
+            child: Column(
+              children: [
+                ListTile(
+                  title: const Text("创建远程房间"),
                   leading: const Icon(Remix.home_wifi_line),
-                  subtitle: const Text("其他设备可以通过房间号加入"),
+                  subtitle: const Text("通过第三方服务器建立临时房间"),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () {
                     Get.toNamed(RoutePath.kRemoteSyncRoom);
@@ -60,14 +82,14 @@ class SyncPage extends StatelessWidget {
                 ),
                 AppStyle.divider,
                 ListTile(
-                  title: const Text("加入房间"),
+                  title: const Text("加入远程房间"),
                   leading: const Icon(Remix.add_circle_line),
                   subtitle: const Text("加入其他设备创建的房间"),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () async {
                     var input = await Utils.showEditTextDialog(
                       "",
-                      title: "加入房间",
+                      title: "加入远程房间",
                       hintText: "请输入房间号,不区分大小写",
                       validate: (text) {
                         if (text.isEmpty) {
@@ -95,28 +117,6 @@ class SyncPage extends StatelessWidget {
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () {
                     Get.toNamed(RoutePath.kRemoteSyncWebDav);
-                  },
-                ),
-              ],
-            ),
-          ),
-          Padding(
-            padding: AppStyle.edgeInsetsA12.copyWith(top: 24),
-            child: Text(
-              "局域网同步",
-              style: Get.textTheme.titleSmall,
-            ),
-          ),
-          SettingsCard(
-            child: Column(
-              children: [
-                ListTile(
-                  title: const Text("局域网同步"),
-                  subtitle: const Text("在局域网内同步数据"),
-                  leading: const Icon(Remix.device_line),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () {
-                    Get.toNamed(RoutePath.kLocalSync);
                   },
                 ),
               ],

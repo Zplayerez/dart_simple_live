@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -9,6 +11,8 @@ import 'package:logger/logger.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:simple_live_core/simple_live_core.dart';
+import 'package:simple_live_account/simple_live_account.dart';
+import 'package:simple_live_tv_app/app/sites.dart';
 import 'package:simple_live_tv_app/app/app_style.dart';
 import 'package:simple_live_tv_app/app/controller/app_settings_controller.dart';
 import 'package:simple_live_tv_app/app/log.dart';
@@ -74,7 +78,46 @@ Future initServices() async {
   //初始化设置控制器
   Get.put(AppSettingsController());
 
+  final storage = LocalStorageService.instance;
+  const legacyKeys = <String, String>{
+    'bilibili': LocalStorageService.kBilibiliCookie,
+  };
+  final accounts = Get.put(
+    PlatformAccountManager(
+      sites: Sites.allSites.map((key, site) => MapEntry(key, site.liveSite)),
+      readLegacyCredential: (siteId) async {
+        final key = legacyKeys[siteId];
+        return key == null ? null : storage.getValue<String>(key, '');
+      },
+      removeLegacyCredential: (siteId) async {
+        final key = legacyKeys[siteId];
+        if (key != null) await storage.removeValue(key);
+      },
+      readRestoreBlocked: (siteId) async =>
+          storage.settingsBox.get(
+            'PlatformAccountRestoreBlocked.$siteId',
+            defaultValue: false,
+          ) ==
+          true,
+      writeRestoreBlocked: (siteId, blocked) async {
+        await storage.setValue(
+          'PlatformAccountRestoreBlocked.$siteId',
+          blocked,
+        );
+        await storage.settingsBox.flush();
+        if (storage.settingsBox.get('PlatformAccountRestoreBlocked.$siteId') !=
+            blocked) {
+          throw StateError('Account restore marker could not be saved');
+        }
+      },
+    ),
+  );
+  await accounts.initialize();
+
   Get.put(BiliBiliAccountService());
+
+  // Verification must not delay the first frame or overwrite a later import.
+  unawaited(accounts.verifyAll());
 
   Get.put(SyncService());
 
@@ -112,9 +155,9 @@ class MyApp extends StatelessWidget {
             ),
             //字体大小不跟随系统变化
             builder: (context, child) => MediaQuery(
-              data: MediaQuery.of(context).copyWith(
-                textScaler: const TextScaler.linear(1.0),
-              ),
+              data: MediaQuery.of(
+                context,
+              ).copyWith(textScaler: const TextScaler.linear(1.0)),
               child: child!,
             ),
           ),

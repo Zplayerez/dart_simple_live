@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:simple_live_app/app/app_style.dart';
-import 'package:simple_live_app/app/sites.dart';
+import 'package:simple_live_app/modules/search/search_all_view.dart';
 import 'package:simple_live_app/modules/search/search_controller.dart';
 import 'package:simple_live_app/modules/search/search_list_view.dart';
 
@@ -17,7 +17,7 @@ class SearchPage extends GetView<AppSearchController> {
           controller: controller.searchController,
           autofocus: true,
           decoration: InputDecoration(
-            hintText: "搜点什么吧",
+            hintText: "主播名、直播链接或房间号",
             border: OutlineInputBorder(
               borderRadius: AppStyle.radius24,
             ),
@@ -65,43 +65,43 @@ class SearchPage extends GetView<AppSearchController> {
           controller: controller.tabController,
           padding: EdgeInsets.zero,
           tabAlignment: TabAlignment.center,
-          tabs: Sites.supportSites
-              .map(
-                (e) => Tab(
-                  //text: e.name,
-                  child: Row(
-                    children: [
-                      Image.asset(
-                        e.logo,
-                        width: 24,
-                      ),
-                      AppStyle.hGap8,
-                      Text(e.name),
-                    ],
+          tabs: [
+            const Tab(text: '全部平台'),
+            ...controller.sites
+                .map(
+                  (e) => Tab(
+                    //text: e.name,
+                    child: Row(
+                      children: [
+                        Image.asset(
+                          e.logo,
+                          width: 24,
+                        ),
+                        AppStyle.hGap8,
+                        Text(e.name),
+                      ],
+                    ),
                   ),
-                ),
-              )
-              .toList(),
+                )
+                .toList()
+          ],
           labelPadding: AppStyle.edgeInsetsH20,
           isScrollable: true,
           indicatorSize: TabBarIndicatorSize.label,
         ),
       ),
-      body: TabBarView(
-        physics: const NeverScrollableScrollPhysics(),
-        controller: controller.tabController,
-        children: Sites.supportSites
-            .map((e) => SearchListView(
-                      e.id,
-                    )
-                // (e) => e.id == Constant.kDouyin
-                //     ? const DouyinSearchView()
-                //     : SearchListView(
-                //         e.id,
-                //       ),
-                )
-            .toList(),
-      ),
+      body: Obx(() => Column(children: [
+            if (controller.parsing.value) const LinearProgressIndicator(),
+            Expanded(
+                child: TabBarView(
+              physics: const NeverScrollableScrollPhysics(),
+              controller: controller.tabController,
+              children: [
+                SearchAllView(controller: controller),
+                ...controller.sites.map((site) => SearchListView(site.id))
+              ],
+            )),
+          ])),
     );
   }
 }

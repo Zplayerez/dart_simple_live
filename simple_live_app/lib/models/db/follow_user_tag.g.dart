@@ -20,19 +20,22 @@ class FollowUserTagAdapter extends TypeAdapter<FollowUserTag> {
       id: fields[1] as String,
       tag: fields[2] as String,
       userId: (fields[3] as List).cast<String>(),
+      order: fields[4] == null ? 0 : fields[4] as int,
     );
   }
 
   @override
   void write(BinaryWriter writer, FollowUserTag obj) {
     writer
-      ..writeByte(3)
+      ..writeByte(4)
       ..writeByte(1)
       ..write(obj.id)
       ..writeByte(2)
       ..write(obj.tag)
       ..writeByte(3)
-      ..write(obj.userId);
+      ..write(obj.userId)
+      ..writeByte(4)
+      ..write(obj.order);
   }
 
   @override
@@ -41,7 +44,7 @@ class FollowUserTagAdapter extends TypeAdapter<FollowUserTag> {
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-          other is FollowUserTagAdapter &&
-              runtimeType == other.runtimeType &&
-              typeId == other.typeId;
+      other is FollowUserTagAdapter &&
+          runtimeType == other.runtimeType &&
+          typeId == other.typeId;
 }

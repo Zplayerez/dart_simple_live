@@ -24,7 +24,7 @@ class DouyinDanmakuArgs {
       "webRid": webRid,
       "roomId": roomId,
       "userId": userId,
-      "cookie": cookie,
+      "cookie": "[redacted]",
     });
   }
 }
@@ -46,6 +46,13 @@ class DouyinDanmaku implements LiveDanmaku {
   @override
   Future start(dynamic args) async {
     danmakuArgs = args as DouyinDanmakuArgs;
+    final endpoint = Uri.parse(serverUrl);
+    if (!LiveAccountSession.permitsDanmakuEndpoint(
+      LiveAccountPlatform.douyin,
+      endpoint,
+    )) {
+      throw StateError('Unsupported Douyin danmaku endpoint');
+    }
     var ts = DateTime.now().millisecondsSinceEpoch;
     var uri = Uri.parse(serverUrl).replace(
       scheme: "wss",
@@ -92,12 +99,12 @@ class DouyinDanmaku implements LiveDanmaku {
 
     var url = "$uri&signature=$sign";
     var backupUrl = url.replaceAll("webcast3-ws-web-lq", "webcast5-ws-web-lf");
-    print(url);
+
     webScoketUtils = WebScoketUtils(
       url: url,
       backupUrl: backupUrl,
       headers: {
-        "User-Agnet": DouyinSite.kDefaultUserAgent,
+        "User-Agent": DouyinSite.kDefaultUserAgent,
         "Cookie": danmakuArgs.cookie,
         "Origin": "https://live.douyin.com",
       },

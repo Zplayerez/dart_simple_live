@@ -24,6 +24,8 @@ class SyncClientInfoModel {
         address: asT<String>(json['address'])!,
         port: asT<int>(json['port'])!,
       );
+  bool get supportsFollowTags => type.toLowerCase() != 'tv';
+
   String type;
   String name;
   String version;

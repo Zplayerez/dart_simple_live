@@ -43,6 +43,8 @@ class LiveRoomDetail {
   /// 显示时间
   final String? showTime;
 
+  final int? accountSessionVersion;
+
   LiveRoomDetail({
     required this.roomId,
     required this.title,
@@ -58,6 +60,7 @@ class LiveRoomDetail {
     required this.url,
     this.isRecord = false,
     this.showTime,
+    this.accountSessionVersion,
   });
 
   @override
@@ -72,8 +75,8 @@ class LiveRoomDetail {
       "introduction": introduction,
       "notice": notice,
       "status": status,
-      "data": data.toString(),
-      "danmakuData": danmakuData.toString(),
+      "data": "[redacted]",
+      "danmakuData": "[redacted]",
       "url": url,
       "isRecord": isRecord,
       "showTime": showTime,

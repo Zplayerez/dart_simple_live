@@ -1,11 +1,9 @@
-import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:get/get.dart';
-import 'package:simple_live_app/app/constant.dart';
-import 'package:simple_live_app/app/log.dart';
 import 'package:simple_live_app/app/sites.dart';
+import 'package:simple_live_app/services/room_input_parser.dart';
 import 'package:simple_live_app/routes/app_navigation.dart';
 
 class ParseController extends GetxController {
@@ -21,7 +19,7 @@ class ParseController extends GetxController {
     FocusManager.instance.primaryFocus?.unfocus();
 
     var parseResult = await parse(e);
-    if (parseResult.isEmpty && parseResult.first == "") {
+    if (parseResult.isEmpty || parseResult.first == "") {
       SmartDialog.showToast("无法解析此链接");
       return;
     }
@@ -39,7 +37,7 @@ class ParseController extends GetxController {
       return;
     }
     var parseResult = await parse(e);
-    if (parseResult.isEmpty && parseResult.first == "") {
+    if (parseResult.isEmpty || parseResult.first == "") {
       SmartDialog.showToast("无法解析此链接");
       return;
     }
@@ -107,77 +105,12 @@ class ParseController extends GetxController {
   }
 
   Future<List> parse(String url) async {
-    var id = "";
-    if (url.contains("bilibili.com")) {
-      var regExp = RegExp(r"bilibili\.com/([\d|\w]+)");
-      id = regExp.firstMatch(url)?.group(1) ?? "";
-      return [id, Sites.allSites[Constant.kBiliBili]!];
-    }
-
-    if (url.contains("b23.tv")) {
-      var btvReg = RegExp(r"https?:\/\/b23.tv\/[0-9a-z-A-Z]+");
-      var u = btvReg.firstMatch(url)?.group(0) ?? "";
-      var location = await getLocation(u);
-
-      return await parse(location);
-    }
-
-    if (url.contains("douyu.com")) {
-      var regExp = RegExp(r"douyu\.com/([\d|\w]+)");
-      // 适配 topic_url
-      if(url.contains("topic")){
-        regExp = RegExp(r"[?&]rid=([\d]+)");
-      }
-      id = regExp.firstMatch(url)?.group(1) ?? "";
-
-      return [id, Sites.allSites[Constant.kDouyu]!];
-    }
-    if (url.contains("huya.com")) {
-      var regExp = RegExp(r"huya\.com/([\d|\w]+)");
-      id = regExp.firstMatch(url)?.group(1) ?? "";
-
-      return [id, Sites.allSites[Constant.kHuya]!];
-    }
-    if (url.contains("live.douyin.com")) {
-      var regExp = RegExp(r"live\.douyin\.com/([\d|\w]+)");
-      id = regExp.firstMatch(url)?.group(1) ?? "";
-
-      return [id, Sites.allSites[Constant.kDouyin]!];
-    }
-    if (url.contains("webcast.amemv.com")) {
-      var regExp = RegExp(r"reflow/(\d+)");
-      id = regExp.firstMatch(url)?.group(1) ?? "";
-      return [id, Sites.allSites[Constant.kDouyin]!];
-    }
-    if (url.contains("v.douyin.com")) {
-      var regExp = RegExp(r"http.?://v.douyin.com/[\d\w]+/");
-      var u = regExp.firstMatch(url)?.group(0) ?? "";
-      var location = await getLocation(u);
-      return await parse(location);
-    }
-
-    return [];
-  }
-
-  Future<String> getLocation(String url) async {
     try {
-      if (url.isEmpty) return "";
-      await Dio().get(
-        url,
-        options: Options(
-          followRedirects: false,
-        ),
-      );
-    } on DioException catch (e) {
-      if (e.response!.statusCode == 302) {
-        var redirectUrl = e.response!.headers.value("Location");
-        if (redirectUrl != null) {
-          return redirectUrl;
-        }
-      }
-    } catch (e) {
-      Log.logPrint(e);
+      final result = await RoomInputParser.parse(url);
+      if (result == null) return [];
+      return [result.roomId, Sites.allSites[result.siteId]!];
+    } catch (_) {
+      return [];
     }
-    return "";
   }
 }

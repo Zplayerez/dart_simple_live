@@ -29,11 +29,11 @@ class BiliBiliDanmakuArgs {
   String toString() {
     return json.encode({
       "roomId": roomId,
-      "token": token,
+      "token": "[redacted]",
       "serverHost": serverHost,
       "buvid": buvid,
       "uid": uid,
-      "cookie": cookie,
+      "cookie": "[redacted]",
     });
   }
 }
@@ -56,14 +56,17 @@ class BiliBiliDanmaku implements LiveDanmaku {
   @override
   Future start(dynamic args) async {
     danmakuArgs = args as BiliBiliDanmakuArgs;
+    final endpoint = Uri.parse('wss://${danmakuArgs.serverHost}/sub');
+    if (!LiveAccountSession.permitsDanmakuEndpoint(
+      LiveAccountPlatform.bilibili,
+      endpoint,
+    )) {
+      throw StateError('Unsupported Bilibili danmaku endpoint');
+    }
     webScoketUtils = WebScoketUtils(
       url: "wss://${args.serverHost}/sub",
       heartBeatTime: heartbeatTime,
-      headers: args.cookie.isEmpty
-          ? null
-          : {
-              "cookie": args.cookie,
-            },
+      headers: args.cookie.isEmpty ? null : {"cookie": args.cookie},
       onMessage: (e) {
         decodeMessage(e);
       },
@@ -102,10 +105,7 @@ class BiliBiliDanmaku implements LiveDanmaku {
 
   @override
   void heartbeat() {
-    webScoketUtils?.sendMessage(encodeData(
-      "",
-      2,
-    ));
+    webScoketUtils?.sendMessage(encodeData("", 2));
   }
 
   @override
@@ -172,10 +172,12 @@ class BiliBiliDanmaku implements LiveDanmaku {
 
         var text = utf8.decode(body, allowMalformed: true);
 
-        var group =
-            text.split(RegExp(r"[\x00-\x1f]+", unicode: true, multiLine: true));
-        for (var item
-            in group.where((x) => x.length > 2 && x.startsWith('{'))) {
+        var group = text.split(
+          RegExp(r"[\x00-\x1f]+", unicode: true, multiLine: true),
+        );
+        for (var item in group.where(
+          (x) => x.length > 2 && x.startsWith('{'),
+        )) {
           parseMessage(item);
         }
       }
@@ -210,8 +212,8 @@ class BiliBiliDanmaku implements LiveDanmaku {
           return;
         }
         LiveSuperChatMessage sc = LiveSuperChatMessage(
-          backgroundBottomColor:
-              obj["data"]["background_bottom_color"].toString(),
+          backgroundBottomColor: obj["data"]["background_bottom_color"]
+              .toString(),
           backgroundColor: obj["data"]["background_color"].toString(),
           endTime: DateTime.fromMillisecondsSinceEpoch(
             obj["data"]["end_time"] * 1000,
@@ -239,8 +241,9 @@ class BiliBiliDanmaku implements LiveDanmaku {
   }
 
   int readInt(List<int> buffer, int start, int len) {
-    var bytes =
-        Uint8List.fromList(buffer.getRange(start, start + len).toList());
+    var bytes = Uint8List.fromList(
+      buffer.getRange(start, start + len).toList(),
+    );
     var byteBuffer = bytes.buffer;
     var data = ByteData.view(byteBuffer);
     var result = 0;

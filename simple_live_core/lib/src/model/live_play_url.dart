@@ -1,22 +1,94 @@
 import 'dart:convert';
 
-class LivePlayUrl {
-  /// 播放地址
-  final List<String> urls;
+/// Metadata for one returned URL; different CDNs can downgrade independently.
+class LivePlayUrlInfo {
+  final String? actualQuality;
+  final int? actualRate;
+  final String? cdn;
+  final DateTime? fetchedAt;
 
-  /// 请求头
+  /// Provider-reported lifetime; zero means no fixed expiry was reported,
+  /// not a promise that the URL is permanent.
+  final int? expiresInSeconds;
+  final String? limitationReason;
+
+  /// Prefer provider metadata over the requested label. A numeric rate without
+  /// its display name must not be presented as the requested original quality.
+  String displayedQuality(String requested) {
+    final returnedName = actualQuality?.trim();
+    if (returnedName != null && returnedName.isNotEmpty) return returnedName;
+    if (actualRate != null) return '平台码率 $actualRate';
+    return requested;
+  }
+
+  const LivePlayUrlInfo({
+    this.actualQuality,
+    this.actualRate,
+    this.cdn,
+    this.fetchedAt,
+    this.expiresInSeconds,
+    this.limitationReason,
+  });
+}
+
+class LivePlayUrl {
+  final List<String> urls;
   final Map<String, String>? headers;
+  final String? actualQuality;
+  final int? actualRate;
+  final String? cdn;
+  final DateTime? fetchedAt;
+  final int? expiresInSeconds;
+  final int? accountSessionVersion;
+  final String? limitationReason;
+  final Map<String, LivePlayUrlInfo> urlInfo;
 
   LivePlayUrl({
     required this.urls,
     this.headers,
-  });
+    this.actualQuality,
+    this.actualRate,
+    this.cdn,
+    this.fetchedAt,
+    this.expiresInSeconds,
+    this.accountSessionVersion,
+    this.limitationReason,
+    Map<String, LivePlayUrlInfo> urlInfo = const {},
+  }) : urlInfo = Map.unmodifiable(urlInfo);
+
+  LivePlayUrlInfo infoForUrl(String url) =>
+      urlInfo[url] ??
+      LivePlayUrlInfo(
+        actualQuality: actualQuality,
+        actualRate: actualRate,
+        cdn: cdn,
+        fetchedAt: fetchedAt,
+        expiresInSeconds: expiresInSeconds,
+        limitationReason: limitationReason,
+      );
+
+  /// Stable across signed URL renewal and the removal/reordering of CDNs.
+  String identityForUrl(String url) {
+    final info = infoForUrl(url);
+    final uri = Uri.tryParse(url);
+    final format = uri?.path.toLowerCase().endsWith('.m3u8') == true
+        ? 'hls'
+        : 'flv';
+    return '${info.cdn?.isNotEmpty == true ? info.cdn : uri?.host}/$format';
+  }
+
+  int indexForIdentity(String? identity) {
+    final index = urls.indexWhere((url) => identityForUrl(url) == identity);
+    return index >= 0 ? index : 0;
+  }
 
   @override
-  String toString() {
-    return json.encode({
-      "urls": urls,
-      "headers": headers.toString(),
-    });
-  }
+  String toString() => json.encode({
+    'urlCount': urls.length,
+    'headers': '[redacted]',
+    'actualQuality': actualQuality,
+    'actualRate': actualRate,
+    'expiresInSeconds': expiresInSeconds,
+    'accountSessionVersion': accountSessionVersion,
+  });
 }

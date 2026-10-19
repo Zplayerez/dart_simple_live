@@ -57,6 +57,11 @@ add_subdirectory("runner")
 # them to the application.
 include(flutter/generated_plugins.cmake)
 
+# Preserve native startup error codes in release builds without exposing paths
+# or browser data. The pinned plugin otherwise reports every HRESULT as "0".
+include(cmake/webview_diagnostics.cmake)
+simple_live_webview_diagnostics()
+
 
 # === Installation ===
 # Support files are copied into place next to the executable, so that it can
