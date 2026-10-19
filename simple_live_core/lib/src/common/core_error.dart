@@ -4,18 +4,16 @@ class CoreError extends Error {
 
   /// 错误信息
   final String message;
+  final String? category;
 
-  CoreError(
-    this.message, {
-    this.statusCode = 0,
-  });
+  CoreError(this.message, {this.statusCode = 0, this.category});
   @override
   String toString() {
     if (statusCode != 0) {
       return statusCodeToString(statusCode);
     }
 
-    return message;
+    return category == null ? message : '$message ($category)';
   }
 
   String statusCodeToString(int statusCode) {

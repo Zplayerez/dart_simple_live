@@ -3,6 +3,8 @@ import 'package:simple_live_core/src/common/core_error.dart';
 import 'package:dio/dio.dart';
 
 import 'custom_interceptor.dart';
+import 'http_failure.dart';
+import 'http_request_scope.dart';
 
 class HttpClient {
   static HttpClient? _httpUtil;
@@ -49,6 +51,8 @@ class HttpClient {
     Map<String, dynamic>? header,
     CancelToken? cancel,
   }) async {
+    final scope = HttpRequestScope.current;
+    scope?.check();
     try {
       queryParameters ??= {};
       header ??= {};
@@ -62,11 +66,13 @@ class HttpClient {
             (key) => key.toLowerCase() == "cookie",
           ),
         ),
-        cancelToken: cancel,
+        cancelToken: scope?.tokenFor(cancel) ?? cancel,
       );
+      scope?.check();
       _acceptResponseCookies(header, result);
       return result.data;
     } catch (e) {
+      scope?.check();
       if (e is DioException) _acceptResponseCookies(header, e.response);
       if (e is DioException && e.type == DioExceptionType.badResponse) {
         throw CoreError(
@@ -74,7 +80,10 @@ class HttpClient {
           statusCode: e.response?.statusCode ?? 0,
         );
       } else {
-        throw CoreError("发送GET请求失败");
+        throw CoreError(
+          "发送GET请求失败",
+          category: e is DioException ? HttpFailure.from(e).category : null,
+        );
       }
     }
   }
@@ -89,6 +98,8 @@ class HttpClient {
     Map<String, dynamic>? header,
     CancelToken? cancel,
   }) async {
+    final scope = HttpRequestScope.current;
+    scope?.check();
     try {
       queryParameters ??= {};
       header ??= {};
@@ -102,11 +113,13 @@ class HttpClient {
             (key) => key.toLowerCase() == "cookie",
           ),
         ),
-        cancelToken: cancel,
+        cancelToken: scope?.tokenFor(cancel) ?? cancel,
       );
+      scope?.check();
       _acceptResponseCookies(header, result);
       return result.data;
     } catch (e) {
+      scope?.check();
       if (e is DioException) _acceptResponseCookies(header, e.response);
       if (e is DioException && e.type == DioExceptionType.badResponse) {
         throw CoreError(
@@ -114,7 +127,10 @@ class HttpClient {
           statusCode: e.response?.statusCode ?? 0,
         );
       } else {
-        throw CoreError("发送GET请求失败");
+        throw CoreError(
+          "发送GET请求失败",
+          category: e is DioException ? HttpFailure.from(e).category : null,
+        );
       }
     }
   }
@@ -132,6 +148,8 @@ class HttpClient {
     bool formUrlEncoded = false,
     CancelToken? cancel,
   }) async {
+    final scope = HttpRequestScope.current;
+    scope?.check();
     try {
       queryParameters ??= {};
       header ??= {};
@@ -150,11 +168,13 @@ class HttpClient {
               ? Headers.formUrlEncodedContentType
               : null,
         ),
-        cancelToken: cancel,
+        cancelToken: scope?.tokenFor(cancel) ?? cancel,
       );
+      scope?.check();
       _acceptResponseCookies(header, result);
       return result.data;
     } catch (e) {
+      scope?.check();
       if (e is DioException) _acceptResponseCookies(header, e.response);
       if (e is DioException && e.type == DioExceptionType.badResponse) {
         throw CoreError(
@@ -162,7 +182,10 @@ class HttpClient {
           statusCode: e.response?.statusCode ?? 0,
         );
       } else {
-        throw CoreError("发送POST请求失败");
+        throw CoreError(
+          "发送POST请求失败",
+          category: e is DioException ? HttpFailure.from(e).category : null,
+        );
       }
     }
   }
@@ -177,6 +200,8 @@ class HttpClient {
     Map<String, dynamic>? header,
     CancelToken? cancel,
   }) async {
+    final scope = HttpRequestScope.current;
+    scope?.check();
     try {
       queryParameters ??= {};
       header ??= {};
@@ -190,17 +215,22 @@ class HttpClient {
           ),
           receiveDataWhenStatusError: true,
         ),
-        cancelToken: cancel,
+        cancelToken: scope?.tokenFor(cancel) ?? cancel,
       );
+      scope?.check();
       _acceptResponseCookies(header, result);
       return result;
     } catch (e) {
+      scope?.check();
       if (e is DioException) _acceptResponseCookies(header, e.response);
       if (e is DioException && e.type == DioExceptionType.badResponse) {
         //throw CoreError(e.message, statusCode: e.response?.statusCode ?? 0);
         return e.response!;
       } else {
-        throw CoreError("发送HEAD请求失败");
+        throw CoreError(
+          "发送HEAD请求失败",
+          category: e is DioException ? HttpFailure.from(e).category : null,
+        );
       }
     }
   }

@@ -17,6 +17,7 @@ class BaseTarsHttp {
   final String servantName;
   final Map<String, String> headers;
 
+  // Milliseconds, matching the original TARS client API.
   var timeOut = 60000;
   var debugLog = false;
   late final Dio dio;
@@ -31,7 +32,9 @@ class BaseTarsHttp {
     this.headers = const {},
   }) {
     dio = Dio(BaseOptions(
-        connectTimeout: Duration(seconds: timeOut),
+        connectTimeout: Duration(milliseconds: timeOut),
+        receiveTimeout: Duration(milliseconds: timeOut),
+        sendTimeout: Duration(milliseconds: timeOut),
         baseUrl: baseUrl,
         responseType: ResponseType.bytes,
         headers: {
@@ -44,10 +47,11 @@ class BaseTarsHttp {
   }
 
   //发送http请求,不返回状态码,异常状态码直接抛出异常TupResultException
-  Future<RSP> tupRequest<REQ, RSP>(
-      String methodName, REQ tReq, RSP tRsp) async {
-    TupResponse<RSP> response =
-        await tupRequestWithRspCode(methodName, tReq, tRsp);
+  Future<RSP> tupRequest<REQ, RSP>(String methodName, REQ tReq, RSP tRsp,
+      {CancelToken? cancelToken}) async {
+    TupResponse<RSP> response = await tupRequestWithRspCode(
+        methodName, tReq, tRsp,
+        cancelToken: cancelToken);
     if (response.code == 0) {
       return response.response!;
     } else {
@@ -58,13 +62,16 @@ class BaseTarsHttp {
 
   //发送http请求,返回状态码及response
   Future<TupResponse<RSP>> tupRequestWithRspCode<REQ, RSP>(
-      String methodName, REQ tReq, RSP tRsp) async {
+      String methodName, REQ tReq, RSP tRsp,
+      {CancelToken? cancelToken}) async {
     final data = buildRequest(methodName, tReq);
-    dio.options.headers[HttpHeaders.contentLengthHeader] = data.lengthInBytes;
     logger.d("send tupRequest, methodName:$methodName");
     final result = await dio.post<List<int>>(
       path,
       data: Stream.fromIterable(data.map((e) => [e])),
+      options: Options(
+          headers: {HttpHeaders.contentLengthHeader: data.lengthInBytes}),
+      cancelToken: cancelToken,
     );
     final value = result.data;
     return tupResponseDecode(methodName, value!, tRsp);
@@ -74,11 +81,12 @@ class BaseTarsHttp {
   Future<TupResponse<void>> tupRequestWithRspCodeNoRsp<REQ>(
       String methodName, REQ tReq) async {
     final data = buildRequest(methodName, tReq);
-    dio.options.headers[HttpHeaders.contentLengthHeader] = data.lengthInBytes;
     logger.d("send tupRequestNoRsp, methodName:$methodName");
     final result = await dio.post<List<int>>(
       path,
       data: Stream.fromIterable(data.map((e) => [e])),
+      options: Options(
+          headers: {HttpHeaders.contentLengthHeader: data.lengthInBytes}),
     );
     final value = result.data;
     return tupEmptyResponseDecode(methodName, value!);

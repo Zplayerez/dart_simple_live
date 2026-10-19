@@ -1,8 +1,11 @@
 import 'dart:convert';
 import 'dart:math';
+import 'package:dio/dio.dart';
 
 import 'package:simple_live_core/simple_live_core.dart';
 import 'package:simple_live_core/src/common/http_client.dart';
+import 'common/core_error.dart';
+import 'common/http_failure.dart';
 import 'package:crypto/crypto.dart';
 import 'package:simple_live_core/src/model/tars/get_cdn_token_ex_req.dart';
 import 'package:simple_live_core/src/model/tars/get_cdn_token_ex_resp.dart';
@@ -302,14 +305,31 @@ class HuyaSite extends LiveSite {
 
   /// return sFlvToken
   Future<String> getCndTokenInfoEx(String stream) async {
+    final scope = HttpRequestScope.current;
+    scope?.check();
     var func = "getCdnTokenInfoEx";
     var tid = HuyaUserId();
     tid.sHuYaUA = "pc_exe&7060000&official";
     var tReq = GetCdnTokenExReq();
     tReq.tId = tid;
     tReq.sStreamName = stream;
-    var resp = await tupClient.tupRequest(func, tReq, GetCdnTokenExResp());
-    return resp.sFlvToken;
+    try {
+      final resp = await tupClient.tupRequest(
+        func,
+        tReq,
+        GetCdnTokenExResp(),
+        cancelToken: scope?.tokenFor(null),
+      );
+      scope?.check();
+      return resp.sFlvToken;
+    } on DioException catch (error) {
+      scope?.check();
+      throw CoreError(
+        '获取虎牙播放签名失败',
+        statusCode: error.response?.statusCode ?? 0,
+        category: HttpFailure.from(error).category,
+      );
+    }
   }
 
   @override

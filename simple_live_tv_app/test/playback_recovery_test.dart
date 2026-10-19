@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:get/get.dart';
@@ -23,10 +24,17 @@ class _Site extends LiveSite {
   int revision = 0;
   int statusCalls = 0;
   bool failFetch = false;
+  Completer<void>? roomGate;
+  Completer<void>? qualityGate;
+  final scopes = <HttpRequestScope>[];
   bool? live = true;
 
   @override
   Future<LiveRoomDetail> getRoomDetail({required String roomId}) async {
+    final scope = HttpRequestScope.current;
+    if (scope != null) scopes.add(scope);
+    final gate = roomGate;
+    if (gate != null) await gate.future;
     if (failFetch) throw StateError('synthetic provider failure');
     revision++;
     return LiveRoomDetail(
@@ -42,8 +50,13 @@ class _Site extends LiveSite {
 
   @override
   Future<List<LivePlayQuality>> getPlayQualites(
-          {required LiveRoomDetail detail}) async =>
-      [LivePlayQuality(quality: '原画', data: null)];
+      {required LiveRoomDetail detail}) async {
+    final scope = HttpRequestScope.current;
+    if (scope != null) scopes.add(scope);
+    final gate = qualityGate;
+    if (gate != null) await gate.future;
+    return [LivePlayQuality(quality: '原画', data: null)];
+  }
 
   @override
   Future<LivePlayUrl> getPlayUrls(
@@ -107,6 +120,7 @@ void main() {
   late _Player native;
   late _Room room;
   setUp(() {
+    PlaybackLineHistory.shared.clear();
     Get.testMode = true;
     Log.logger = Logger(level: Level.off);
     site = _Site();
@@ -356,7 +370,7 @@ void main() {
     await close(tester);
   });
 
-  testWidgets('an explicit playback reload clears the recurring line history',
+  testWidgets('playback reload avoids recently recurring failed lines',
       (tester) async {
     await open(tester);
     for (var cycle = 0; cycle < 2; cycle++) {
@@ -367,11 +381,11 @@ void main() {
     expect(native.opened.last, startsWith('https://b.invalid/'));
     await room.getPlayUrl();
     await tester.pump();
-    expect(native.opened.last, startsWith('https://a.invalid/'));
+    expect(native.opened.last, startsWith('https://b.invalid/'));
     await tick(tester, 301);
     eof();
     await tester.pump();
-    expect(native.opened.last, startsWith('https://a.invalid/'));
+    expect(native.opened.last, startsWith('https://b.invalid/'));
     expect(native.opened, hasLength(5));
     await close(tester);
   });
@@ -527,6 +541,254 @@ void main() {
     await tick(tester, 31, advancing: false);
     expect(native.opened, hasLength(2));
     expect(site.statusCalls, 2);
+    await close(tester);
+  });
+  void dnsFailure() => room.mediaError(
+      'tcp: Failed to resolve hostname a.invalid: Temporary failure in name resolution');
+
+  testWidgets('DNS failure on the first open switches without startup grace',
+      (tester) async {
+    native.duringOpen = dnsFailure;
+    await open(tester);
+    native.state = native.state.copyWith(buffering: true);
+    await tick(tester, 1, advancing: false);
+    expect(native.opened, hasLength(2));
+    expect(native.opened.last, startsWith('https://b.invalid/'));
+    await close(tester);
+  });
+
+  testWidgets('same-host DNS from the old stream allows new-stream startup',
+      (tester) async {
+    await open(tester);
+    await tick(tester, 2);
+    native.duringOpen = dnsFailure;
+    eof();
+    await tester.pump();
+    native.state = native.state.copyWith(buffering: true);
+    await tick(tester, 2, advancing: false);
+    expect(native.opened, hasLength(2));
+    native.state = native.state.copyWith(buffering: false);
+    await tick(tester, 15);
+    expect(native.opened, hasLength(2));
+    await close(tester);
+  });
+
+  testWidgets(
+      'DNS failure bypasses twelve-second buffer grace and duplicate errors',
+      (tester) async {
+    await open(tester);
+    await tick(tester, 2, advancing: false);
+    native.state = native.state.copyWith(buffering: true);
+    dnsFailure();
+    room.mediaError('Failed to open https://a.invalid/live.flv');
+    await tick(tester, 1, advancing: false);
+    expect(native.opened, hasLength(2));
+    expect(native.opened.last, startsWith('https://b.invalid/'));
+    expect(room.currentQualityInfo.value, '原画');
+    await tick(tester, 65);
+    expect(native.opened, hasLength(2));
+    await close(tester);
+  });
+
+  testWidgets(
+      'DNS history survives reload and leaving then reentering the room',
+      (tester) async {
+    await open(tester);
+    await tick(tester, 2, advancing: false);
+    dnsFailure();
+    await tick(tester, 1, advancing: false);
+    await room.getPlayUrl();
+    expect(native.opened.last, startsWith('https://b.invalid/'));
+    await close(tester);
+    native = _Player();
+    await open(tester);
+    expect(native.opened.single, startsWith('https://b.invalid/'));
+    await close(tester);
+  });
+
+  testWidgets('an explicit line selection overrides avoidance once',
+      (tester) async {
+    await open(tester);
+    await tick(tester, 2, advancing: false);
+    dnsFailure();
+    await tick(tester, 1, advancing: false);
+    expect(native.opened.last, startsWith('https://b.invalid/'));
+    await room.changePlayLine(0);
+    expect(native.opened.last, startsWith('https://a.invalid/'));
+    await tick(tester, 2, advancing: false);
+    dnsFailure();
+    await tick(tester, 1, advancing: false);
+    expect(native.opened.last, startsWith('https://b.invalid/'));
+    await close(tester);
+  });
+
+  testWidgets(
+      'late errors from the previous hostname do not reopen the good source',
+      (tester) async {
+    await open(tester);
+    await tick(tester, 2, advancing: false);
+    dnsFailure();
+    await tick(tester, 1, advancing: false);
+    dnsFailure();
+    room.mediaError('Failed to open https://a.invalid/old.flv');
+    await tick(tester, 20);
+    expect(native.opened, hasLength(2));
+    await close(tester);
+  });
+
+  testWidgets('an advancing source ignores delayed same-host DNS errors',
+      (tester) async {
+    await open(tester);
+    await tick(tester, 2);
+    dnsFailure();
+    await tick(tester, 5);
+    expect(native.opened, hasLength(1));
+    await close(tester);
+  });
+
+  testWidgets('DNS errors do not override user pause or background state',
+      (tester) async {
+    await open(tester);
+    await tick(tester, 2);
+    native.state = native.state.copyWith(playing: false);
+    dnsFailure();
+    await tick(tester, 2, advancing: false);
+    expect(native.opened, hasLength(1));
+    native.state = native.state.copyWith(playing: true);
+    dnsFailure();
+    room.didChangeAppLifecycleState(AppLifecycleState.paused);
+    await tick(tester, 20, advancing: false);
+    expect(native.opened, hasLength(1));
+    await close(tester);
+  });
+
+  testWidgets('recovery fetches have a total deadline and discard late results',
+      (tester) async {
+    await open(tester);
+    await tick(tester, 2);
+    final gate = Completer<void>();
+    site.roomGate = gate;
+    eof();
+    await tester.pump();
+    await tick(tester, 13, advancing: false);
+    expect(native.opened, hasLength(1));
+    expect(site.statusCalls, 1);
+    expect(site.scopes, isNotEmpty);
+    expect(site.scopes.every((scope) => !scope.active), isTrue);
+    site.roomGate = null;
+    gate.complete();
+    await tester.pump();
+    expect(native.opened, hasLength(1));
+    await tick(tester, 31, advancing: false);
+    expect(native.opened, hasLength(2));
+    await close(tester);
+  });
+
+  testWidgets(
+      'closing during provider fetch cancels its scope and prevents late open',
+      (tester) async {
+    await open(tester);
+    await tick(tester, 2);
+    final gate = Completer<void>();
+    site.roomGate = gate;
+    eof();
+    await tester.pump();
+    expect(site.scopes.last.active, isTrue);
+    await close(tester);
+    expect(site.scopes.last.active, isFalse);
+    site.roomGate = null;
+    gate.complete();
+    await tester.pump(const Duration(seconds: 30));
+    expect(native.opened, hasLength(1));
+  });
+
+  testWidgets(
+      'healthy playback remains one source for over two simulated hours',
+      (tester) async {
+    await open(tester);
+    await tick(tester, 2 * 60 * 60 + 10);
+    expect(native.opened, hasLength(1));
+    expect(room.currentQualityInfo.value, '原画');
+    expect(room.mediaErrorRetryCount, 0);
+    await close(tester);
+  });
+
+  testWidgets('closing also cancels initial quality discovery', (tester) async {
+    await open(tester);
+    final gate = Completer<void>();
+    site.qualityGate = gate;
+    final request = room.getPlayQualites();
+    await tester.pump();
+    final scope = site.scopes.last;
+    expect(scope.active, isTrue);
+    await close(tester);
+    await request;
+    expect(scope.active, isFalse);
+    gate.complete();
+    await tester.pump();
+    expect(native.opened, hasLength(1));
+  });
+  testWidgets('EOF received in background resumes recovery on foreground',
+      (tester) async {
+    await open(tester);
+    await tick(tester, 2);
+    room.didChangeAppLifecycleState(AppLifecycleState.paused);
+    eof();
+    await tick(tester, 20, advancing: false);
+    expect(native.opened, hasLength(1));
+    room.didChangeAppLifecycleState(AppLifecycleState.resumed);
+    await tick(tester, 4, advancing: false);
+    expect(native.opened, hasLength(2));
+    await close(tester);
+  });
+
+  testWidgets(
+      'background cancels recovery fetch and resume requests fresh data',
+      (tester) async {
+    await open(tester);
+    await tick(tester, 2);
+    final gate = Completer<void>();
+    site.roomGate = gate;
+    eof();
+    await tester.pump();
+    final pending = site.scopes.last;
+    room.didChangeAppLifecycleState(AppLifecycleState.paused);
+    await tester.pump();
+    expect(pending.active, isFalse);
+    site.roomGate = null;
+    gate.complete();
+    await tick(tester, 20, advancing: false);
+    expect(native.opened, hasLength(1));
+    room.didChangeAppLifecycleState(AppLifecycleState.resumed);
+    await tick(tester, 4, advancing: false);
+    expect(native.opened, hasLength(2));
+    await close(tester);
+  });
+  testWidgets('retry backoff cannot extend the twelve-second fetch budget',
+      (tester) async {
+    site.lines = ['a', 'b', 'c', 'd'];
+    await open(tester);
+    await tick(tester, 2);
+    site.failFetch = true;
+    eof();
+    await tester.pump();
+    await tick(tester, 12, advancing: false);
+    expect(site.statusCalls, 1);
+    expect(native.opened, hasLength(1));
+    expect(room.liveStatus.value, isTrue);
+    await close(tester);
+  });
+  testWidgets(
+      'old terminal errors during open do not interrupt a new stream starting up',
+      (tester) async {
+    native.duringOpen = () => room.mediaError('http: HTTP error 404 Not Found');
+    await open(tester);
+    native.state = native.state.copyWith(buffering: true);
+    await tick(tester, 2, advancing: false);
+    expect(native.opened, hasLength(1));
+    native.state = native.state.copyWith(buffering: false);
+    await tick(tester, 15);
+    expect(native.opened, hasLength(1));
     await close(tester);
   });
 }

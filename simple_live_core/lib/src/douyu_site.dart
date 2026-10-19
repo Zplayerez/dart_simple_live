@@ -1,4 +1,7 @@
 import 'account/platform_account.dart';
+import 'common/core_log.dart';
+import 'common/core_error.dart';
+import 'common/http_request_scope.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
@@ -235,14 +238,28 @@ class DouyuSite extends LiveSite {
         await Future.wait(
           cdns.skip(offset).take(3).map((cdn) async {
             try {
-              return await _getPlayUrlResult(
-                detail.roomId,
-                args,
-                data.rate,
-                cdn,
-                session,
-              ).timeout(const Duration(seconds: 6));
-            } catch (_) {
+              return await HttpRequestScope(
+                timeout: const Duration(seconds: 6),
+              ).run(
+                () => _getPlayUrlResult(
+                  detail.roomId,
+                  args,
+                  data.rate,
+                  cdn,
+                  session,
+                ),
+              );
+            } catch (error) {
+              final cause = error is TimeoutException
+                  ? 'timeout'
+                  : error is HttpRequestCancelled
+                  ? 'cancelled'
+                  : error is CoreError
+                  ? error.category ?? 'http'
+                  : error is DouyuPlayException
+                  ? 'provider-${error.code}'
+                  : 'invalid-source';
+              CoreLog.d('[Douyu] source-failed cdn=$cdn cause=$cause');
               return null;
             }
           }),
@@ -364,14 +381,17 @@ class DouyuSite extends LiveSite {
       try {
         // One retry, using the same account, DID and signature. Leave room in
         // the six-second CDN budget and keep the first usable stream on error.
-        final compatible = await _getPlayUrlResult(
-          roomId,
-          args,
-          rate,
-          cdn,
-          session,
-          legacyPlaybackAuth: true,
-        ).timeout(const Duration(seconds: 2));
+        final compatible =
+            await HttpRequestScope(timeout: const Duration(seconds: 2)).run(
+              () => _getPlayUrlResult(
+                roomId,
+                args,
+                rate,
+                cdn,
+                session,
+                legacyPlaybackAuth: true,
+              ),
+            );
         if (compatible.$2.actualRate == rate) return compatible;
       } catch (_) {
         // A compatibility failure must not discard the provider's valid URL.

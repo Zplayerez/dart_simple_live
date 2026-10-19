@@ -1,7 +1,7 @@
 {
-  "version": "1.6.12",
-  "version_num": 10612,
-  "version_desc": "- 修复斗鱼已登录但原画请求仍返回蓝光4M的凭据兼容问题\n- 修复斗鱼原画名称变化后无法自动恢复播放的问题\n- 兼容请求失败时保留可用线路，正常播放不定时重开",
+  "version": "1.6.13",
+  "version_num": 10613,
+  "version_desc": "- 明确的网络故障优先切换同画质线路，刷新和重新进入时避开近期故障线路\n- 限制恢复请求等待时间，取消过期请求，修复后台恢复与旧流错误引起的误换线\n- 修正虎牙播放签名请求超时单位，补充网络及音画同步诊断\n- 正常播放不定时重开；网络异常和多小时连续播放仍需实际使用验证",
   "prerelease": false,
   "download_url": "https://github.com/Zplayerez/dart_simple_live/releases"
 }
